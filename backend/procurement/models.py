@@ -1,3 +1,12 @@
+"""Domain models for produce procurement and payouts.
+
+Numeric precision follows :mod:`procurement.precision`: gross kg 3 dp, moisture
+2 dp, derived kg 5 dp, price/money 2 dp, monetary maths with ``Decimal`` and
+``ROUND_HALF_UP``. ``DecimalField`` rejects excess input precision through
+``full_clean()`` (ModelForms/admin), but ``save()`` does **not** call
+``full_clean()``; see that module for the full M1/M2/M3 enforcement contract.
+"""
+
 from typing import ClassVar
 
 from django.db import models
@@ -26,7 +35,7 @@ class Farmer(models.Model):
     bank_reference = models.CharField(max_length=255, blank=True, default="")
     outstanding_advance = models.DecimalField(
         max_digits=14, decimal_places=2, default=0
-    )
+    )  # money: 2 dp, 0.00 .. 999,999,999,999.99
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -43,8 +52,12 @@ class Farmer(models.Model):
 
 class Crop(models.Model):
     name = models.CharField(max_length=100, unique=True)
-    moisture_threshold = models.DecimalField(max_digits=5, decimal_places=2)
-    max_moisture = models.DecimalField(max_digits=5, decimal_places=2)
+    moisture_threshold = models.DecimalField(
+        max_digits=5, decimal_places=2
+    )  # moisture: 2 dp, bounded 0..100 by crop_moisture_bounds_valid
+    max_moisture = models.DecimalField(
+        max_digits=5, decimal_places=2
+    )  # moisture: 2 dp, bounded 0..100 by crop_moisture_bounds_valid
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -89,7 +102,9 @@ class PriceListEntry(models.Model):
         related_name="price_entries",
         db_index=False,
     )
-    price_per_kg = models.DecimalField(max_digits=12, decimal_places=2)
+    price_per_kg = models.DecimalField(
+        max_digits=12, decimal_places=2
+    )  # rate: 2 dp, 0.01 .. 9,999,999,999.99
     effective_from = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -113,7 +128,9 @@ class Advance(models.Model):
     farmer = models.ForeignKey(
         Farmer, on_delete=models.PROTECT, related_name="advances"
     )
-    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    amount = models.DecimalField(
+        max_digits=14, decimal_places=2
+    )  # money: 2 dp, 0.01 .. 999,999,999,999.99
     given_on = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -138,9 +155,15 @@ class Payout(models.Model):
     status = models.CharField(
         max_length=10, choices=PayoutStatus.choices, default=PayoutStatus.DRAFT
     )
-    gross_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    advance_deduction = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    net_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    gross_amount = models.DecimalField(
+        max_digits=14, decimal_places=2, default=0
+    )  # money: 2 dp
+    advance_deduction = models.DecimalField(
+        max_digits=14, decimal_places=2, default=0
+    )  # money: 2 dp
+    net_amount = models.DecimalField(
+        max_digits=14, decimal_places=2, default=0
+    )  # money: 2 dp
     created_at = models.DateTimeField(auto_now_add=True)
     finalised_at = models.DateTimeField(null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
@@ -197,19 +220,25 @@ class Delivery(models.Model):
 
     gross_weight_kg = models.DecimalField(
         max_digits=12, decimal_places=3, null=True, blank=True
-    )
+    )  # measured: 3 dp, 0.001 .. 999,999,999.999 kg
     moisture_percent = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True
-    )
+    )  # moisture: 2 dp, 0.00 .. 100.00 by rule
     threshold_used = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True
-    )
-    deduction_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
-    deduction_kg = models.DecimalField(max_digits=15, decimal_places=5, default=0)
-    net_kg = models.DecimalField(max_digits=15, decimal_places=5, default=0)
+    )  # moisture: 2 dp, frozen from Crop.moisture_threshold at record time
+    deduction_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=0
+    )  # percent: 2 dp, 0.00 .. 10.00 in practice (engine caps at 10)
+    deduction_kg = models.DecimalField(
+        max_digits=15, decimal_places=5, default=0
+    )  # derived: 5 dp
+    net_kg = models.DecimalField(
+        max_digits=15, decimal_places=5, default=0
+    )  # derived: 5 dp
     applied_price = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True
-    )
+    )  # rate: 2 dp, frozen from PriceListEntry.price_per_kg
     price_list_entry = models.ForeignKey(
         PriceListEntry,
         on_delete=models.PROTECT,
@@ -217,7 +246,9 @@ class Delivery(models.Model):
         null=True,
         blank=True,
     )
-    amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    amount = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )  # money: 2 dp
     calculation_version = models.PositiveSmallIntegerField(default=1)
 
     original_delivery = models.ForeignKey(
@@ -229,7 +260,7 @@ class Delivery(models.Model):
     )
     correction_magnitude = models.DecimalField(
         max_digits=14, decimal_places=2, null=True, blank=True
-    )
+    )  # money: 2 dp, positive magnitude; sign carried by kind
     reason = models.CharField(max_length=255, blank=True, default="")
 
     payout = models.ForeignKey(
