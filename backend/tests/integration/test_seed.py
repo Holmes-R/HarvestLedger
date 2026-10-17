@@ -69,8 +69,10 @@ def test_seed_farmers_have_zero_outstanding(seed):
 
 def test_seed_is_idempotent(seed):
     seed()
+    first_counts = _counts()
     output = seed()
-    assert _counts() == EXPECTED
+    assert first_counts == EXPECTED
+    assert _counts() == first_counts
     assert "0 created" in output
 
 
@@ -88,6 +90,11 @@ def test_seed_preserves_existing_values(seed):
     )
     entry.price_per_kg = Decimal("99.99")
     entry.save()
+    price_history = list(
+        PriceListEntry.objects.order_by("crop_grade_id", "effective_from").values_list(
+            "crop_grade_id", "effective_from", "price_per_kg"
+        )
+    )
 
     seed()
 
@@ -95,6 +102,84 @@ def test_seed_preserves_existing_values(seed):
     entry.refresh_from_db()
     assert farmer.outstanding_advance == Decimal("250.00")
     assert entry.price_per_kg == Decimal("99.99")
+    assert (
+        list(
+            PriceListEntry.objects.order_by(
+                "crop_grade_id", "effective_from"
+            ).values_list("crop_grade_id", "effective_from", "price_per_kg")
+        )
+        == price_history
+    )
+    assert _counts() == EXPECTED
+
+
+def test_reseeding_preserves_frozen_delivery_and_financial_rows(seed):
+    seed()
+    farmer = Farmer.objects.get(phone="0000000001")
+    entry = PriceListEntry.objects.get(
+        crop_grade__crop__name="Maize",
+        crop_grade__code="A",
+        effective_from=date(2026, 1, 1),
+    )
+    payout = Payout.objects.create(
+        farmer=farmer,
+        week_start=date(2026, 1, 5),
+        week_end=date(2026, 1, 11),
+        gross_amount=Decimal("2450.00"),
+        net_amount=Decimal("2450.00"),
+    )
+    delivery = Delivery.objects.create(
+        farmer=farmer,
+        crop_grade=entry.crop_grade,
+        delivered_on=date(2026, 1, 6),
+        accounting_date=date(2026, 1, 6),
+        gross_weight_kg=Decimal("100.000"),
+        moisture_percent=Decimal("14.00"),
+        threshold_used=Decimal("14.00"),
+        deduction_percent=Decimal("0.00"),
+        deduction_kg=Decimal("0.00000"),
+        net_kg=Decimal("100.00000"),
+        applied_price=entry.price_per_kg,
+        price_list_entry=entry,
+        amount=Decimal("2450.00"),
+        payout=payout,
+    )
+    frozen = {
+        field: getattr(delivery, field)
+        for field in (
+            "farmer_id",
+            "payout_id",
+            "price_list_entry_id",
+            "gross_weight_kg",
+            "moisture_percent",
+            "threshold_used",
+            "deduction_percent",
+            "deduction_kg",
+            "net_kg",
+            "applied_price",
+            "amount",
+            "calculation_version",
+        )
+    }
+
+    seed()
+
+    delivery.refresh_from_db()
+    payout.refresh_from_db()
+    assert {field: getattr(delivery, field) for field in frozen} == frozen
+    assert (payout.gross_amount, payout.net_amount) == (
+        Decimal("2450.00"),
+        Decimal("2450.00"),
+    )
+    assert (
+        Advance.objects.count(),
+        Delivery.objects.count(),
+        Payout.objects.count(),
+    ) == (
+        0,
+        1,
+        1,
+    )
     assert _counts() == EXPECTED
 
 

@@ -37,6 +37,7 @@ from procurement.models import (
     Farmer,
     Payout,
     PayoutStatus,
+    PriceListEntry,
 )
 
 WEEK_1_START = date(2026, 1, 5)  # Monday
@@ -54,7 +55,13 @@ def grade(db):
     crop = Crop.objects.create(
         name="Maize", moisture_threshold=Decimal("14.00"), max_moisture=Decimal("20.00")
     )
-    return CropGrade.objects.create(crop=crop, code="A")
+    result = CropGrade.objects.create(crop=crop, code="A")
+    PriceListEntry.objects.create(
+        crop_grade=result,
+        price_per_kg=Decimal("24.50"),
+        effective_from=date(2026, 1, 1),
+    )
+    return result
 
 
 def _record_delivery(farmer, grade, delivered_on, gross="100.000", moisture="14.00"):
@@ -102,14 +109,13 @@ def test_delivery_membership_is_a_single_foreign_key(farmer, grade):
         farmer=farmer, week_start=WEEK_2_START, week_end=date(2026, 1, 18)
     )
     delivery = _model_delivery(farmer, grade, WEEK_1_START)
-
     delivery.payout = first
-    delivery.save()
-    delivery.payout = second
-    delivery.save()
+    delivery.save(update_fields=["payout"])
+    delivery.refresh_from_db()
 
-    assert second.deliveries.count() == 1
-    assert first.deliveries.count() == 0
+    assert delivery.payout_id == first.pk
+    assert set(first.deliveries.values_list("pk", flat=True)) == {delivery.pk}
+    assert not second.deliveries.filter(pk=delivery.pk).exists()
 
 
 # --- M2 rule tests (expected to fail until M2) -----------------------------
@@ -121,13 +127,19 @@ def test_monday_to_sunday_selection(farmer, grade):
 
     inside_mon = _record_delivery(farmer, grade, WEEK_1_START)
     inside_sun = _record_delivery(farmer, grade, WEEK_1_END)
-    outside = _record_delivery(farmer, grade, WEEK_2_START)
+    before = _record_delivery(farmer, grade, date(2026, 1, 4))
+    after = _record_delivery(farmer, grade, WEEK_2_START)
+    other_farmer = Farmer.objects.create(
+        name="Bina", phone="0000000002", village="Kolar"
+    )
+    someone_else = _record_delivery(other_farmer, grade, WEEK_1_START)
 
     payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
 
     ids = set(payout.deliveries.values_list("pk", flat=True))
     assert ids == {inside_mon.pk, inside_sun.pk}
-    assert outside.pk not in ids
+    assert payout.farmer_id == farmer.pk
+    assert {before.pk, after.pk, someone_else.pk}.isdisjoint(ids)
 
 
 @pytest.mark.m2
@@ -135,10 +147,12 @@ def test_generation_assigns_each_delivery_once(farmer, grade):
     from procurement.services import payouts
 
     delivery = _record_delivery(farmer, grade, WEEK_1_START)
-    payouts.build_weekly_payout(farmer, WEEK_1_START)
-    payouts.build_weekly_payout(farmer, WEEK_1_START)
+    first = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    second = payouts.build_weekly_payout(farmer, WEEK_1_START)
 
-    assert Delivery.objects.filter(pk=delivery.pk, payout__isnull=False).count() == 1
+    delivery.refresh_from_db()
+    assert first.pk == second.pk == delivery.payout_id
+    assert set(second.deliveries.values_list("pk", flat=True)) == {delivery.pk}
     assert Payout.objects.filter(farmer=farmer).count() == 1
 
 
@@ -178,6 +192,42 @@ def test_recovery_cap_and_outstanding_carries_across_weeks(farmer, grade):
 
 
 @pytest.mark.m2
+def test_large_outstanding_advance_carries_beyond_two_weeks(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("3000.00"), WEEK_1_START)
+    for week_start, expected_balance in (
+        (WEEK_1_START, Decimal("2265.00")),
+        (WEEK_2_START, Decimal("1530.00")),
+    ):
+        _record_delivery(farmer, grade, week_start)
+        payout = payouts.build_weekly_payout(farmer, week_start)
+        payouts.finalise_payout(payout)
+        payout.refresh_from_db()
+        farmer.refresh_from_db()
+        assert payout.advance_deduction == Decimal("735.00")
+        assert farmer.outstanding_advance == expected_balance
+
+
+@pytest.mark.m2
+def test_recovery_cap_rounds_an_exact_half_cent_up(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("1.00"), WEEK_1_START)
+    delivery = _record_delivery(farmer, grade, WEEK_1_START, gross="0.002")
+    assert delivery.amount == Decimal("0.05")
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+    assert payout.gross_amount == Decimal("0.05")
+    assert payout.advance_deduction == Decimal("0.02")
+    assert payout.net_amount == Decimal("0.03")
+    assert farmer.outstanding_advance == Decimal("0.98")
+
+
+@pytest.mark.m2
 def test_finalisation_changes_balance_exactly_once(farmer, grade):
     from procurement.services import advances, payouts
 
@@ -203,9 +253,25 @@ def test_finalised_payout_is_immutable(farmer, grade):
     _record_delivery(farmer, grade, WEEK_1_START)
     payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
     payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    frozen = (
+        payout.status,
+        payout.gross_amount,
+        payout.advance_deduction,
+        payout.net_amount,
+        set(payout.deliveries.values_list("pk", flat=True)),
+    )
 
     with pytest.raises(payouts.PayoutStateError):
         payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payout.refresh_from_db()
+    assert (
+        payout.status,
+        payout.gross_amount,
+        payout.advance_deduction,
+        payout.net_amount,
+        set(payout.deliveries.values_list("pk", flat=True)),
+    ) == frozen
 
 
 @pytest.mark.m2
@@ -247,7 +313,10 @@ def test_supplementary_payout_allowed_after_finalisation(farmer, grade):
 
     assert supplementary.pk != first.pk
     assert supplementary.status == PayoutStatus.DRAFT
-    assert late.pk in set(supplementary.deliveries.values_list("pk", flat=True))
+    assert set(supplementary.deliveries.values_list("pk", flat=True)) == {late.pk}
+    first.refresh_from_db()
+    assert first.status == PayoutStatus.FINALISED
+    assert late.pk not in set(first.deliveries.values_list("pk", flat=True))
 
 
 @pytest.mark.m2

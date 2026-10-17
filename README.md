@@ -197,14 +197,19 @@ inclusive, with `Payout.week_start` the Monday and `week_end` the Sunday.
 2. There is deliberately **no** unconditional `(farmer, week)` unique: once a
    week is FINALISED/PAID, late or previously unassigned records can be paid via
    a supplementary payout for the same week.
-3. A correction (credit/debit note) is stamped with `accounting_date` = the IST
-   business date it is recorded, **not** the original `delivered_on`; that date
-   selects the target payout week.
-4. Advance recovery is `min(outstanding_advance, 30% of gross_amount)`, and the
-   remainder carries forward to later weeks.
-5. Multiple advances to one farmer on one date are allowed; `(farmer, given_on)`
+3. Building an empty week returns no payout. Finalised payout totals and their
+   included deliveries remain frozen.
+4. A correction (credit/debit note) requires its original delivery to belong to
+   a FINALISED or PAID payout and retains the original farmer. It is stamped with
+   `accounting_date` = the IST business date it is recorded, **not** the original
+   `delivered_on`; that date selects the target payout week. Credit notes add
+   to payout gross; debit notes subtract from it. Each note is included once
+   without changing the original.
+5. Advance recovery is `min(outstanding_advance, 30% of gross_amount)`, rounded
+   to money precision with `ROUND_HALF_UP`, and the remainder carries forward.
+6. Multiple advances to one farmer on one date are allowed; `(farmer, given_on)`
    is **not** a deduplication key (see `scenarios.ADVANCE_DEDUPLICATION_NOTE`).
-6. UNRESOLVED product decisions (intentionally deferred): intra-day cutoff,
+7. UNRESOLVED product decisions (intentionally deferred): intra-day cutoff,
    corrections against an already-PAID week, multiple supplementaries per
    farmer/week, whether external dates are guaranteed IST, and back-dating
    limits. These are listed in `clock.py`.

@@ -53,6 +53,7 @@ def test_exact_effective_date_wins(grade):
 def test_latest_eligible_price_is_used(grade):
     _price(grade, "22.00", date(2025, 11, 1))
     newer = _price(grade, "24.50", date(2026, 1, 1))
+    _price(grade, "99.00", date(2026, 4, 1))
     assert _pricing().resolve_price(grade, date(2026, 3, 15)) == newer
 
 
@@ -60,6 +61,13 @@ def test_missing_crop_grade_combination_raises(grade):
     pricing = _pricing()
     with pytest.raises(pricing.PriceNotFound):
         pricing.resolve_price(grade, date(2026, 1, 1))
+
+
+def test_future_only_price_is_not_eligible(grade):
+    _price(grade, "24.50", date(2026, 1, 7))
+    pricing = _pricing()
+    with pytest.raises(pricing.PriceNotFound):
+        pricing.resolve_price(grade, date(2026, 1, 6))
 
 
 def test_historical_snapshot_survives_a_later_backdated_price(grade):
@@ -78,9 +86,25 @@ def test_historical_snapshot_survives_a_later_backdated_price(grade):
     assert snapshot.applied_price == Decimal("24.50")
     assert snapshot.price_list_entry_id == original.pk
 
-    # A price is added *afterwards* with an earlier effective date.
-    _price(grade, "10.00", date(2025, 12, 1))
+    frozen = {
+        field: getattr(snapshot, field)
+        for field in (
+            "threshold_used",
+            "deduction_percent",
+            "deduction_kg",
+            "net_kg",
+            "amount",
+            "applied_price",
+            "price_list_entry_id",
+            "calculation_version",
+        )
+    }
+
+    # Both entries are added after the delivery. The backdated one would now
+    # win a fresh lookup for January 6, but must not rewrite this delivery.
+    backdated = _price(grade, "10.00", date(2026, 1, 5))
+    _price(grade, "30.00", date(2026, 1, 10))
+    assert _pricing().resolve_price(grade, date(2026, 1, 6)) == backdated
 
     snapshot.refresh_from_db()
-    assert snapshot.applied_price == Decimal("24.50")
-    assert snapshot.price_list_entry_id == original.pk
+    assert {field: getattr(snapshot, field) for field in frozen} == frozen
