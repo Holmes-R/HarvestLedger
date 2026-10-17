@@ -150,8 +150,8 @@ class Payout(models.Model):
     farmer = models.ForeignKey(
         Farmer, on_delete=models.PROTECT, related_name="payouts", db_index=False
     )
-    week_start = models.DateField()
-    week_end = models.DateField()
+    week_start = models.DateField()  # Monday, IST business date
+    week_end = models.DateField()  # Sunday (inclusive), IST business date
     status = models.CharField(
         max_length=10, choices=PayoutStatus.choices, default=PayoutStatus.DRAFT
     )
@@ -215,8 +215,10 @@ class Delivery(models.Model):
         null=True,
         blank=True,
     )
-    delivered_on = models.DateField(null=True, blank=True)
-    accounting_date = models.DateField(null=True, blank=True)
+    delivered_on = models.DateField(null=True, blank=True)  # IST business date
+    accounting_date = models.DateField(
+        null=True, blank=True
+    )  # IST business date; == delivered_on for PROCUREMENT (see constraint)
 
     gross_weight_kg = models.DecimalField(
         max_digits=12, decimal_places=3, null=True, blank=True
@@ -298,6 +300,16 @@ class Delivery(models.Model):
                     )
                 ),
                 name="delivery_note_requires_fields",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(kind=DeliveryKind.PROCUREMENT)
+                    | (
+                        Q(delivered_on__isnull=False)
+                        & Q(accounting_date=F("delivered_on"))
+                    )
+                ),
+                name="delivery_accounting_matches_delivered",
             ),
         ]
         indexes: ClassVar[list] = [

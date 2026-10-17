@@ -105,7 +105,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Business timezone. Instants are stored in UTC (USE_TZ); IST is only used to
+# derive *business dates* (delivery accounting dates, payout weeks).
+TIME_ZONE = 'Asia/Kolkata'
 
 USE_I18N = True
 

@@ -1,3 +1,4 @@
-from django.shortcuts import render
+"""Procurement API views.
 
-# Create your views here.
+Intentionally empty in M1; DRF endpoints are added in M3.
+"""
