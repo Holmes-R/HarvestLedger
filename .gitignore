@@ -1,0 +1,14 @@
+/backend/venv
+/backend/pyvenv.cfg
+/frontend/node_modules
+/frontend/package-lock.json
+.env
+**/.env 
+.venv/ 
+
+__pycache__/ 
+.pytest_cache/ 
+.coverage 
+htmlcov/ 
+dist/ 
+*.sqlite3 
