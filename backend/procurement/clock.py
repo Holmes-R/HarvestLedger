@@ -56,8 +56,9 @@ UNRESOLVED TIMING POLICY (product decision; intentionally not fixed in M1)
 4. Are all externally supplied dates guaranteed to be IST business dates?
 5. How far in the past/future may a back-dated delivery or correction be?
 
-``tests/unit/test_payout_grouping_pending.py`` pins the behaviour once these are
-decided; it is skipped until then.
+``tests/integration/test_payouts.py`` (marked ``m2``) pins the behaviour once
+these are decided; those tests fail until the M2 engine exists rather than being
+skipped.
 """
 
 from collections.abc import Iterator
