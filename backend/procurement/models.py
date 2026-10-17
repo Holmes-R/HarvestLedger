@@ -64,7 +64,9 @@ class Crop(models.Model):
 
 
 class CropGrade(models.Model):
-    crop = models.ForeignKey(Crop, on_delete=models.CASCADE, related_name="grades")
+    crop = models.ForeignKey(
+        Crop, on_delete=models.CASCADE, related_name="grades", db_index=False
+    )
     code = models.CharField(max_length=2)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -82,7 +84,10 @@ class CropGrade(models.Model):
 
 class PriceListEntry(models.Model):
     crop_grade = models.ForeignKey(
-        CropGrade, on_delete=models.PROTECT, related_name="price_entries"
+        CropGrade,
+        on_delete=models.PROTECT,
+        related_name="price_entries",
+        db_index=False,
     )
     price_per_kg = models.DecimalField(max_digits=12, decimal_places=2)
     effective_from = models.DateField()
@@ -97,12 +102,6 @@ class PriceListEntry(models.Model):
             models.UniqueConstraint(
                 fields=["crop_grade", "effective_from"],
                 name="pricelist_grade_eff_unique",
-            ),
-        ]
-        indexes: ClassVar[list] = [
-            models.Index(
-                fields=["crop_grade", "-effective_from"],
-                name="ple_cropgrade_effective_desc",
             ),
         ]
 
@@ -131,7 +130,9 @@ class Advance(models.Model):
 
 
 class Payout(models.Model):
-    farmer = models.ForeignKey(Farmer, on_delete=models.PROTECT, related_name="payouts")
+    farmer = models.ForeignKey(
+        Farmer, on_delete=models.PROTECT, related_name="payouts", db_index=False
+    )
     week_start = models.DateField()
     week_end = models.DateField()
     status = models.CharField(
@@ -177,7 +178,7 @@ class Payout(models.Model):
 
 class Delivery(models.Model):
     farmer = models.ForeignKey(
-        Farmer, on_delete=models.PROTECT, related_name="deliveries"
+        Farmer, on_delete=models.PROTECT, related_name="deliveries", db_index=False
     )
     kind = models.CharField(
         max_length=16,
