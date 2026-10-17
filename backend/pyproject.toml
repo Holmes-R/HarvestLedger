@@ -1,0 +1,7 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+# Django-generated migrations are not hand-edited: exclude them from lint/format
+# so `ruff check` stays meaningful for source and tests.
+extend-exclude = ["**/migrations/**"]
