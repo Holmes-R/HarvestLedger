@@ -176,13 +176,16 @@ strings** (never JSON floats) at the model field's scale —
 | GET | /api/v1/farmers/ | List/search farmers (`search`, paginated) |
 | POST | /api/v1/farmers/ | Create a farmer |
 | GET | /api/v1/farmers/{id}/ | Farmer detail |
-| GET | /api/v1/farmers/{id}/ledger/ | Full reconciled ledger |
+| PATCH | /api/v1/farmers/{id}/ | Update a farmer (`name`, `phone`, `village`, `bank_reference`) |
+| GET | /api/v1/farmers/{id}/ledger/ | Full reconciled ledger (`from`/`to` bound history) |
 | GET | /api/v1/farmers/{id}/advance-reconciliation/ | Advance/recovery reconciliation |
-| GET | /api/v1/crops/ | List crops (read-only) |
-| GET | /api/v1/crops/{id}/ | Crop detail |
+| GET | /api/v1/crops/ | List crops (with `allowed_grades`) |
+| POST | /api/v1/crops/ | Create a crop and its allowed grades |
+| GET | /api/v1/crops/{id}/ | Crop detail (with `allowed_grades`) |
+| PATCH | /api/v1/crops/{id}/ | Update crop moisture / allowed grades |
 | GET | /api/v1/grades/ | List grades (`crop` filter) |
-| GET | /api/v1/prices/ | List price entries (`crop_grade` filter) |
-| POST | /api/v1/prices/ | Add a price entry (service-validated) |
+| GET | /api/v1/price-lists/ | List price entries (`crop_grade`, `crop` filters) |
+| POST | /api/v1/price-lists/ | Append a price entry (service-validated) |
 | POST | /api/v1/deliveries/preview/ | Preview a delivery calculation (writes nothing) |
 | GET | /api/v1/deliveries/ | List deliveries (`farmer`, `kind`, `from`, `to`, `payout`) |
 | POST | /api/v1/deliveries/ | Record a delivery |
@@ -208,15 +211,45 @@ advances, corrections and payouts support the query parameters listed above.
 An unknown `kind`/`status` or an unparseable date returns `400`.
 
 **Errors.** Every error uses one envelope:
-`{"error": {"code": "...", "message": "...", "fields": {...} | null}}`. Codes map
-to statuses: 404 for `*_not_found`; 409 for state conflicts
-(`payout_state_error`, `price_already_exists`, `original_not_settled`,
-`original_changed`, `not_editable`, `empty_week`); 422 for well-formed requests
-rejected by a domain rule (`price_not_found`, `grade_not_allowed`,
-`moisture_exceeds_maximum`, `future_delivery_date`, `invalid_moisture_bounds`);
-400 for input/validation errors. Unexpected failures return a generic `500`
-(`internal_error`) with a correlation reference and never expose a traceback or
-credential.
+
+```json
+{"error": {"code": "STABLE_CODE", "message": "...", "details": {}, "request_id": "..."}}
+```
+
+Codes map to statuses deliberately: `400` malformed fields/types/precision
+(`required`, `max_decimal_places`, `protected_field`, `unsupported_field`, ...);
+`404` unknown resources (`*_not_found`, `not_found`); `409` duplicates and
+forbidden state transitions (`payout_state_error`, `price_already_exists`,
+`original_not_settled`, `original_changed`, `not_editable`, `empty_week`,
+`duplicate_crop_grade`, `grade_in_use`, `duplicate_crop`, `conflict`,
+`referenced_record`); `422` domain rejection
+of a well-formed request (`price_not_found`, `grade_not_allowed`,
+`moisture_exceeds_maximum`, `future_delivery_date`, `invalid_moisture_bounds`,
+`invalid_state`); `500` unexpected faults with a generic public message
+(`internal_error`).
+
+Known database conflicts surfaced after transaction rollback are mapped
+deliberately rather than collapsed into one response: a uniqueness violation on a
+named constraint becomes its specific `409` (`payout_one_draft_farmer_week` →
+`payout_state_error`, `pricelist_grade_eff_unique` → `price_already_exists`,
+`cropgrade_unique_crop_code` → `duplicate_crop_grade`); any other uniqueness
+violation → `409 conflict`; a foreign-key/PROTECT violation → `409
+referenced_record`; a check-constraint violation → `422 invalid_state`; NOT NULL
+and other integrity failures are treated as `500` server faults, never
+misreported as conflicts.
+
+**Request IDs.** A well-formed client `X-Request-ID` is reused; otherwise one is
+generated. It is returned on every response as `X-Request-ID` and in error
+bodies, and is used in structured logs.
+
+**Logging.** One structured JSON line per request
+(`procurement/api/request_log.py`) with a real UTC timestamp, level, event,
+request ID, method, safe path (never the query string), status, duration and the
+non-sensitive numeric record IDs from the URL. Domain rejections log at
+`WARNING` (`request.rejected`); unexpected faults log at `ERROR`
+(`request.failed`) with server-side exception type, message and traceback.
+Request/response bodies, credentials, banking references and review keys are
+never logged.
 
 **Write contract.** Writes are strict. Sending a server-computed field (for
 example `amount`, `net_kg`, `applied_price`, `outstanding_advance`, or a
@@ -224,6 +257,43 @@ payout total) returns `400` with code `protected_field`; any field the endpoint
 does not accept returns `400` with code `unsupported_field`. Such fields are
 refused, never silently ignored by `read_only`. Input uses ISO-8601 dates
 (`YYYY-MM-DD`); decimals must not exceed the model column's scale.
+
+**Crop and grade management.** A crop response carries `allowed_grades` as a
+list of `{id, code}` objects. `POST /crops/` and `PATCH /crops/{id}/` accept an
+optional `allowed_grades` list of short codes (the same set, so a PATCH replaces
+it): new codes are created and removed codes are deleted only when the grade has
+no history. A grade referenced by a price entry or a delivery is **historical**;
+removing it is refused with `409 grade_in_use` and the whole request (including
+any new grades) rolls back. A crop's moisture configuration must satisfy
+`0 <= moisture_threshold <= max_moisture <= 100` (`422 invalid_moisture_bounds`),
+and a duplicate crop name is `409 duplicate_crop`. Changing a crop never touches
+existing delivery snapshots (`threshold_used`, `applied_price`, `price_list_entry`,
+`deduction_*`, `net_kg`, `amount` stay frozen).
+
+**Financial fields are never writable.** `outstanding_advance` (and every other
+computed money value) is refused with `400 protected_field` on farmer CRUD. There
+are no delete routes and no price update/delete route: price history is
+append-only (`PATCH`/`DELETE` on a price-list return `405`).
+
+**Advances.** `POST /advances/` calls the M2 `advances.post_advance` service;
+neither the serializer nor the view ever touches `outstanding_advance`. The
+amount must be positive (`400 not_positive`) and within the column's precision
+and capacity, and the farmer must be supplied and stored (`400` / `404
+farmer_not_found`). A client-supplied balance or other computed field returns
+`400 protected_field`. Advances are append-only: `GET /advances/{id}/` is
+read-only (`PATCH`/`DELETE` → `405`), and the balance moves only through the
+locking service. The same `(farmer, given_on)` is **not** a dedup key — several
+advances may be posted on one day and each is counted once.
+
+**Ledger.** `GET /farmers/{id}/ledger/` projects the M2 `ledger.build_farmer_ledger`
+read model: deliveries (flagged `is_correction`), advances and payouts are listed
+separately; DRAFT `draft_projection` is kept apart from settled recovery
+(`settled_earnings`, `total_recovered`); it returns the current
+`outstanding_advance`, the `reconciliation`, and `earnings_identity_holds`
+(`settled_earnings + draft_projection + unassigned_earnings ==
+total_recorded_amount`, so no delivery is double counted). `?from=`/`?to=`
+(ISO dates) bound the returned history rows, while the totals, balance and
+reconciliation always cover the full history.
 
 ## 8. Business rules and assumptions
 

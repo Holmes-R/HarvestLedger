@@ -126,3 +126,112 @@ Produced:
   separation and decimal-string output.
 - README §7 — documented the strict write contract; `COVERAGE.md` refreshed
   (396 passed).
+
+---
+
+## Entry 5 — Unified error contract, request IDs and structured logging
+
+> Implement one API error contract: {"error": {"code": "...", "message": "...",
+> "details": {}, "request_id": "..."}}. Use the documented mapping (400 malformed
+> fields/types/precision, 404 unknown resources, 409 duplicates and forbidden
+> state transitions, 422 domain rejection, 500 unexpected faults with a generic
+> public message). Map existing domain exceptions deliberately. Handle known
+> database conflicts after transaction rollback. Do not turn all database errors
+> into the same misleading response. Generate a request ID or validate a supplied
+> one; return it in X-Request-ID and error bodies; use the same ID in structured
+> logs. Log real UTC timestamp, level, event, request ID, method, safe path,
+> status, duration and relevant non-sensitive record IDs. Log domain rejections
+> at WARNING and unexpected faults at ERROR with server-side exception
+> information. Do not log full bodies, credentials, banking references, review
+> keys, or sensitive query parameters. Test validation, not-found, conflict,
+> domain and unexpected-error paths; verify an unexpected financial failure rolls
+> back changes.
+
+Produced:
+
+- `procurement/api/request_log.py` — structured JSON log helper and request-ID
+  generate/validate helpers.
+- `procurement/api/middleware.py` — `RequestIDMiddleware` (accept/generate the
+  ID, echo `X-Request-ID`, log successful requests).
+- `procurement/api/errors.py` — rewritten envelope (`details`, `request_id`),
+  deliberate status mapping, known-unique-constraint and sqlstate conflict
+  mapping, WARNING/ERROR structured logging with exception detail for faults.
+- `config/settings.py` — `RequestIDMiddleware` in `MIDDLEWARE`, `LOGGING` config.
+- `tests/api/test_errors.py` — status mapping, request-ID handling, logging and
+  sensitive-data exclusion, rollback, and database-conflict mapping.
+- README §7 error/request-id/logging documentation.
+
+---
+
+## Entry 6 — Catalog endpoints and the crop/grade management contract
+
+> Implement these endpoints through the approved contract: GET/POST
+> /api/v1/farmers/, GET/PATCH /api/v1/farmers/{id}/, GET/POST /api/v1/crops/,
+> GET/PATCH /api/v1/crops/{id}/, GET/POST /api/v1/price-lists/. Expose allowed
+> grades through crop responses and the chosen grade management contract.
+> Requirements: farmer outstanding advance cannot be written through generic
+> CRUD; validate crop moisture configuration and allowed grades; price creation
+> calls the M2 pricing service; price history is append-only; no unrestricted
+> financial update/delete actions; duplicate crop/grade/effective-date price
+> returns a controlled conflict; crop/grade configuration changes preserve
+> existing snapshots; used grades cannot be destructively removed from historical
+> records. Do not use unrestricted ModelViewSet defaults. Test valid
+> creation/update, missing fields, unknown references, duplicate prices,
+> protected fields, and historical preservation.
+
+Produced:
+
+- `procurement/api/serializers.py` — `CropGradeRefSerializer`, `CropSerializer`
+  (`allowed_grades`), `CropWriteSerializer` (moisture-bounds + grade-code
+  validation, duplicate-name `409 duplicate_crop`, atomic grade reconciliation
+  that refuses to remove a used grade) and `FarmerSerializer.update` (re-validates
+  the merged record; identity and `outstanding_advance` stay read-only).
+- `procurement/api/views.py` — `FarmerDetailView` (GET/PATCH), `CropListCreate`
+  (GET/POST) and `CropDetailView` (GET/PATCH); no ModelViewSet defaults, no
+  delete routes.
+- `procurement/api/errors.py` — `GradeInUse` (`409 grade_in_use`) and
+  `duplicate_crop` mapping.
+- `procurement/api/urls.py` — `farmers/{id}/` detail PATCH, `crops/` and
+  `crops/{id}/` writes, prices renamed to `price-lists/`.
+- `tests/api/test_catalog.py` — 26 tests across farmers, crops and price lists.
+- README §7 — endpoint table, crop/grade management contract, append-only and
+  snapshot-preservation notes; `COVERAGE.md` refreshed (438 passed).
+
+---
+
+## Entry 7 — Advances and the bounded farmer ledger
+
+> Implement GET/POST /api/v1/advances/ and GET /api/v1/farmers/{id}/ledger/.
+> Advance creation must call the M2 advance service. Do not update outstanding
+> balances in serializers or views. Reject nonpositive amounts, excess
+> precision/capacity, missing or unknown farmer, and client-supplied balance or
+> calculated fields. Do not expose generic advance editing/deletion that bypasses
+> balance reconciliation. Ledger responses must use the M2 ledger service,
+> distinguish deliveries, corrections, advances and payouts, distinguish draft
+> projections from settled recovery, return current outstanding and meaningful
+> arithmetic, avoid double counting earnings or recovery, and support bounded
+> history. Test persisted balance changes, rollback, distinct same-day advances,
+> unknown farmer, decimal strings, and ledger reconciliation.
+
+Produced:
+
+- `procurement/api/serializers.py` — `AdvanceCreateSerializer` now refuses
+  `outstanding_advance`/`balance` (`400 protected_field`); fixed the ledger
+  delivery projection to read `crop_grade_id` / `payout_id` /
+  `original_delivery_id` (previously silently dropped) and exposed
+  `history_from` / `history_to`.
+- `procurement/api/views.py` — `FarmerLedgerView` parses `?from=`/`?to=`,
+  rejects an unparseable or inverted range (`400`), and passes the window to the
+  service.
+- `procurement/services/ledger.py` — `build_farmer_ledger(farmer, *, since,
+  until)` bounds the returned history rows while computing all aggregate totals,
+  the outstanding balance and the reconciliation over the full history.
+- `procurement/api/errors.py` — `_drf_validation` now reads the `code`/`message`
+  of dict-shaped field errors, so list-view date/int filter errors report
+  `invalid` instead of a blanket `error`.
+- `tests/api/test_advances.py`, `tests/api/test_ledger_api.py` — precision,
+  capacity, missing/unknown farmer, protected balance/calculated fields, same-day
+  distinct advances, rollback and decimal strings; two-week ledger identity,
+  draft-vs-settled separation, corrections, bounded history and range validation.
+- README §7 — advances contract and ledger (bounded history, no double counting);
+  `COVERAGE.md` refreshed (450 passed).

@@ -9,16 +9,24 @@ app_name = "api"
 urlpatterns = [
     path("health/", views.health, name="health"),
     path("farmers/", views.FarmerListCreate.as_view(), name="farmer-list"),
-    path("farmers/<int:pk>/", views.FarmerDetail.as_view(), name="farmer-detail"),
+    path(
+        "farmers/<int:pk>/",
+        views.FarmerDetailView.as_view(),
+        name="farmer-detail",
+    ),
     path(
         "farmers/<int:pk>/ledger/",
         views.FarmerLedgerView.as_view(),
         name="farmer-ledger",
     ),
-    path("crops/", views.CropList.as_view(), name="crop-list"),
-    path("crops/<int:pk>/", views.CropDetail.as_view(), name="crop-detail"),
+    path("crops/", views.CropListCreate.as_view(), name="crop-list"),
+    path(
+        "crops/<int:pk>/",
+        views.CropDetailView.as_view(),
+        name="crop-detail",
+    ),
     path("grades/", views.CropGradeList.as_view(), name="grade-list"),
-    path("prices/", views.PriceListCreate.as_view(), name="price-list"),
+    path("price-lists/", views.PriceListCreate.as_view(), name="price-list"),
     path(
         "deliveries/preview/",
         views.DeliveryPreviewView.as_view(),

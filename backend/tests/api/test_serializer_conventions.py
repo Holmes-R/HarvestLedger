@@ -130,7 +130,7 @@ def test_missing_required_field(api_client, farmer, grade, price):
         format="json",
     )
     assert response.status_code == 400
-    assert "moisture_percent" in _error(response)["fields"]
+    assert "moisture_percent" in _error(response)["details"]
 
 
 @pytest.mark.django_db
@@ -141,7 +141,7 @@ def test_null_on_non_nullable_field(api_client, farmer, grade, price):
         format="json",
     )
     assert response.status_code == 400
-    assert "delivered_on" in _error(response)["fields"]
+    assert "delivered_on" in _error(response)["details"]
 
 
 @pytest.mark.django_db
@@ -152,7 +152,7 @@ def test_blank_required_char_field(api_client):
         format="json",
     )
     assert response.status_code == 400
-    assert "name" in _error(response)["fields"]
+    assert "name" in _error(response)["details"]
 
 
 # --- ISO dates and decimal precision ----------------------------------------
@@ -167,7 +167,7 @@ def test_non_iso_date_is_rejected(api_client, farmer, grade, price):
         format="json",
     )
     assert response.status_code == 400
-    assert "delivered_on" in _error(response)["fields"]
+    assert "delivered_on" in _error(response)["details"]
 
 
 @pytest.mark.django_db

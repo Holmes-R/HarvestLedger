@@ -1,9 +1,11 @@
 """M3: advance posting, listing and reconciliation endpoints."""
 
+from decimal import Decimal
+
 import pytest
 from django.urls import reverse
 
-from procurement.models import Farmer
+from procurement.models import Advance, Farmer
 
 pytestmark = pytest.mark.m3
 
@@ -89,3 +91,106 @@ def test_reconciliation_missing_farmer_is_not_found(api_client):
     response = api_client.get(reverse("api:advance-reconciliation", args=[9999]))
     assert response.status_code == 404
     assert _error(response)["code"] == "farmer_not_found"
+
+
+@pytest.mark.django_db
+def test_post_advance_returns_decimal_string(api_client, farmer):
+    response = api_client.post(
+        reverse("api:advance-list"),
+        {"farmer": farmer.id, "amount": "250.50", "given_on": "2026-01-05"},
+        format="json",
+    )
+    assert response.status_code == 201
+    assert response.json()["amount"] == "250.50"
+    assert isinstance(response.json()["amount"], str)
+
+
+@pytest.mark.django_db
+def test_post_advance_missing_farmer_field(api_client, db):
+    response = api_client.post(
+        reverse("api:advance-list"),
+        {"amount": "100.00", "given_on": "2026-01-05"},
+        format="json",
+    )
+    assert response.status_code == 400
+    assert "farmer" in _error(response)["details"]
+
+
+@pytest.mark.django_db
+def test_post_advance_rejects_over_precise_amount(api_client, farmer):
+    before = Farmer.objects.get(pk=farmer.id).outstanding_advance
+    response = api_client.post(
+        reverse("api:advance-list"),
+        {"farmer": farmer.id, "amount": "10.001", "given_on": "2026-01-05"},
+        format="json",
+    )
+    assert response.status_code == 400
+    assert _error(response)["code"] == "max_decimal_places"
+    assert Advance.objects.count() == 0
+    assert Farmer.objects.get(pk=farmer.id).outstanding_advance == before
+
+
+@pytest.mark.django_db
+def test_post_advance_rejects_over_capacity_amount(api_client, farmer):
+    response = api_client.post(
+        reverse("api:advance-list"),
+        {
+            "farmer": farmer.id,
+            "amount": "10000000000000.00",
+            "given_on": "2026-01-05",
+        },
+        format="json",
+    )
+    assert response.status_code == 400
+    assert "amount" in _error(response)["details"]
+    assert Advance.objects.count() == 0
+    assert Farmer.objects.get(pk=farmer.id).outstanding_advance == Decimal("0.00")
+
+
+@pytest.mark.django_db
+def test_post_advance_rejects_client_supplied_balance(api_client, farmer):
+    response = api_client.post(
+        reverse("api:advance-list"),
+        {
+            "farmer": farmer.id,
+            "amount": "100.00",
+            "given_on": "2026-01-05",
+            "outstanding_advance": "9999.00",
+        },
+        format="json",
+    )
+    assert response.status_code == 400
+    assert _error(response)["code"] == "protected_field"
+    assert Farmer.objects.get(pk=farmer.id).outstanding_advance == Decimal("0.00")
+
+
+@pytest.mark.django_db
+def test_same_day_advances_are_distinct_and_all_counted(api_client, farmer):
+    ids = []
+    for _ in range(3):
+        response = api_client.post(
+            reverse("api:advance-list"),
+            {"farmer": farmer.id, "amount": "100.00", "given_on": "2026-01-05"},
+            format="json",
+        )
+        assert response.status_code == 201
+        ids.append(response.json()["id"])
+    assert len(set(ids)) == 3  # same (farmer, date) is not a dedup key
+    farmer.refresh_from_db()
+    assert farmer.outstanding_advance == Decimal("300.00")
+
+    ledger = api_client.get(reverse("api:farmer-ledger", args=[farmer.id]))
+    assert ledger.json()["total_advances"] == "300.00"
+
+
+@pytest.mark.django_db
+def test_advance_has_no_edit_or_delete(api_client, farmer):
+    created = api_client.post(
+        reverse("api:advance-list"),
+        {"farmer": farmer.id, "amount": "100.00", "given_on": "2026-01-05"},
+        format="json",
+    ).json()
+    url = reverse("api:advance-detail", args=[created["id"]])
+    assert api_client.patch(url, {"amount": "1.00"}, format="json").status_code == 405
+    assert api_client.delete(url).status_code == 405
+    assert Advance.objects.get(pk=created["id"]).amount == Decimal("100.00")

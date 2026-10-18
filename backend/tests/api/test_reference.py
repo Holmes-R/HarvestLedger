@@ -43,7 +43,7 @@ def test_farmer_create_rejects_invalid_phone_with_field_error(api_client):
         format="json",
     )
     assert response.status_code == 400
-    assert "phone" in _error(response)["fields"]
+    assert "phone" in _error(response)["details"]
     assert not Farmer.objects.exists()
 
 

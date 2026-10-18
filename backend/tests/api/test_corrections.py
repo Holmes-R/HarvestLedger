@@ -122,7 +122,7 @@ def test_correction_missing_reason_is_rejected(api_client, farmer, grade, price)
         format="json",
     )
     assert response.status_code == 400
-    assert "reason" in _error(response)["fields"]
+    assert "reason" in _error(response)["details"]
 
 
 @pytest.mark.django_db

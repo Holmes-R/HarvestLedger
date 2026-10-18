@@ -10,10 +10,13 @@ absent, raise the domain not-found error (404) instead of DRF's generic
 ``does_not_exist`` (400) -- a request-level lookup, not a business rule.
 """
 
+from django.db import transaction
+from django.db.models.deletion import ProtectedError
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail
 
-from procurement.api.errors import EmptyWeek
+from procurement.api.errors import EmptyWeek, GradeInUse
 from procurement.models import (
     GRADE_NOTE_KINDS,
     Advance,
@@ -152,14 +155,37 @@ class CropGradeReferenceField(ReferenceField):
 # --- Reference data ---------------------------------------------------------
 
 
+class CropGradeRefSerializer(serializers.ModelSerializer):
+    """An allowed grade rendered on a crop response."""
+
+    class Meta:
+        model = CropGrade
+        fields = ("id", "code")
+        read_only_fields = fields
+
+
 class CropSerializer(serializers.ModelSerializer):
     moisture_threshold = model_decimal(Crop, "moisture_threshold", read_only=True)
     max_moisture = model_decimal(Crop, "max_moisture", read_only=True)
+    allowed_grades = serializers.SerializerMethodField()
 
     class Meta:
         model = Crop
-        fields = ("id", "name", "moisture_threshold", "max_moisture", "created_at")
+        fields = (
+            "id",
+            "name",
+            "moisture_threshold",
+            "max_moisture",
+            "allowed_grades",
+            "created_at",
+        )
         read_only_fields = fields
+
+    @extend_schema_field(CropGradeRefSerializer(many=True))
+    def get_allowed_grades(self, crop):
+        return CropGradeRefSerializer(
+            crop.grades.order_by("code"), many=True
+        ).data
 
 
 class CropGradeSerializer(serializers.ModelSerializer):
@@ -169,6 +195,144 @@ class CropGradeSerializer(serializers.ModelSerializer):
         model = CropGrade
         fields = ("id", "crop", "crop_name", "code", "created_at")
         read_only_fields = fields
+
+
+def _clean_grade_codes(codes):
+    """Return grade codes stripped, validated and de-duplicated in order."""
+    cleaned = []
+    for raw in codes:
+        code = raw.strip()
+        if not code:
+            raise serializers.ValidationError(
+                {
+                    "allowed_grades": [
+                        ErrorDetail(
+                            "Grade codes must be non-blank.", code="invalid"
+                        )
+                    ]
+                }
+            )
+        if code not in cleaned:
+            cleaned.append(code)
+    return cleaned
+
+
+def _grade_in_use(crop, code):
+    return GradeInUse(
+        f"Grade '{code}' for crop '{crop.name}' is referenced by existing "
+        "price or delivery records and cannot be removed."
+    )
+
+
+def _reconcile_grades(crop, codes):
+    """Replace the crop's allowed grade set, protecting used grades.
+
+    Adds missing codes and removes codes no longer listed -- but a grade with
+    any price entry or delivery is **historical** and is never destructively
+    removed (``409 grade_in_use``). Runs in the caller's transaction so a
+    rejected removal rolls the whole change back.
+    """
+    existing = {grade.code: grade for grade in crop.grades.all()}
+    desired = set(codes)
+    for code in codes:
+        if code not in existing:
+            CropGrade.objects.create(crop=crop, code=code)
+    for code, grade in existing.items():
+        if code in desired:
+            continue
+        if grade.price_entries.exists() or grade.deliveries.exists():
+            raise _grade_in_use(crop, code)
+        try:
+            grade.delete()
+        except ProtectedError as exc:
+            raise _grade_in_use(crop, code) from exc
+
+
+class CropWriteSerializer(ProtectedFieldMixin, serializers.Serializer):
+    """Create or configure a crop and its allowed grades.
+
+    Grows the reference data: ``allowed_grades`` is the crop's grade set, given
+    as short codes. On update it replaces the set, refusing to remove a grade
+    that has historical price or delivery usage. Moisture is validated against
+    the stored invariant ``0 <= moisture_threshold <= max_moisture <= 100``.
+    """
+
+    name = serializers.CharField(
+        max_length=Crop._meta.get_field("name").max_length
+    )
+    moisture_threshold = model_decimal(Crop, "moisture_threshold")
+    max_moisture = model_decimal(Crop, "max_moisture")
+    allowed_grades = serializers.ListField(
+        child=serializers.CharField(
+            max_length=CropGrade._meta.get_field("code").max_length
+        ),
+        required=False,
+    )
+    protected_fields = ("id", "created_at", "grades")
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        instance = self.instance
+        threshold = attrs.get(
+            "moisture_threshold",
+            getattr(instance, "moisture_threshold", None),
+        )
+        maximum = attrs.get(
+            "max_moisture", getattr(instance, "max_moisture", None)
+        )
+        if threshold is not None and maximum is not None and not (
+            0 <= threshold <= maximum <= 100
+        ):
+            raise serializers.ValidationError(
+                {
+                    "max_moisture": [
+                        ErrorDetail(
+                            "Moisture configuration must satisfy "
+                            "0 <= moisture_threshold <= max_moisture <= 100.",
+                            code="invalid_moisture_bounds",
+                        )
+                    ]
+                }
+            )
+        name = attrs.get("name")
+        if name is not None:
+            clash = Crop.objects.filter(name=name)
+            if instance is not None:
+                clash = clash.exclude(pk=instance.pk)
+            if clash.exists():
+                raise serializers.ValidationError(
+                    {
+                        "name": [
+                            ErrorDetail(
+                                "A crop with this name already exists.",
+                                code="duplicate_crop",
+                            )
+                        ]
+                    }
+                )
+        if "allowed_grades" in attrs:
+            attrs["allowed_grades"] = _clean_grade_codes(attrs["allowed_grades"])
+        return attrs
+
+    def create(self, validated_data):
+        codes = validated_data.pop("allowed_grades", None) or []
+        with transaction.atomic():
+            crop = Crop(**validated_data)
+            crop.full_clean(validate_unique=False)
+            crop.save()
+            _reconcile_grades(crop, codes)
+        return crop
+
+    def update(self, instance, validated_data):
+        codes = validated_data.pop("allowed_grades", None)
+        with transaction.atomic():
+            for field, value in validated_data.items():
+                setattr(instance, field, value)
+            instance.full_clean(validate_unique=False)
+            instance.save()
+            if codes is not None:
+                _reconcile_grades(instance, codes)
+        return instance
 
 
 class FarmerSerializer(ProtectedFieldMixin, serializers.ModelSerializer):
@@ -200,6 +364,15 @@ class FarmerSerializer(ProtectedFieldMixin, serializers.ModelSerializer):
         farmer.full_clean()
         farmer.save()
         return farmer
+
+    def update(self, instance, validated_data):
+        # Identity and the server-owned outstanding balance are read-only, so
+        # they can never arrive here; re-validate the merged record before save.
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.full_clean()
+        instance.save()
+        return instance
 
 
 class PriceListEntrySerializer(serializers.ModelSerializer):
@@ -407,7 +580,7 @@ class DeliveryEditSerializer(ProtectedFieldMixin, serializers.Serializer):
 class LedgerDeliverySerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
     kind = serializers.CharField(read_only=True)
-    crop_grade = serializers.IntegerField(read_only=True)
+    crop_grade = serializers.IntegerField(source="crop_grade_id", read_only=True)
     delivered_on = serializers.DateField(read_only=True)
     accounting_date = serializers.DateField(read_only=True)
     gross_weight_kg = serializers.DecimalField(
@@ -421,8 +594,12 @@ class LedgerDeliverySerializer(serializers.Serializer):
         read_only=True, allow_null=True, **_RATE
     )
     amount = serializers.DecimalField(read_only=True, allow_null=True, **_MONEY)
-    payout = serializers.IntegerField(read_only=True)
-    original_delivery = serializers.IntegerField(read_only=True)
+    payout = serializers.IntegerField(
+        source="payout_id", read_only=True, allow_null=True
+    )
+    original_delivery = serializers.IntegerField(
+        source="original_delivery_id", read_only=True, allow_null=True
+    )
     correction_magnitude = serializers.DecimalField(
         read_only=True, allow_null=True, **_MONEY
     )
@@ -486,6 +663,8 @@ class FarmerLedgerSerializer(serializers.Serializer):
     total_recorded_amount = serializers.DecimalField(read_only=True, **_MONEY)
     earnings_identity_holds = serializers.BooleanField(read_only=True)
     is_reconciled = serializers.BooleanField(read_only=True)
+    history_from = serializers.DateField(read_only=True, allow_null=True)
+    history_to = serializers.DateField(read_only=True, allow_null=True)
 
 
 # --- Advances ---------------------------------------------------------------
@@ -504,7 +683,12 @@ class AdvanceCreateSerializer(ProtectedFieldMixin, serializers.Serializer):
     farmer = FarmerReferenceField(queryset=Farmer.objects.all())
     amount = model_decimal(Advance, "amount")
     given_on = serializers.DateField()
-    protected_fields = ("id", "created_at")
+    protected_fields = (
+        "id",
+        "created_at",
+        "outstanding_advance",
+        "balance",
+    )
 
     def create(self, validated_data):
         return post_advance(

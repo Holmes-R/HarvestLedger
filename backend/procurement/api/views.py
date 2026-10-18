@@ -8,7 +8,7 @@ Path/body reference lookups are request-level resolution, not domain rules.
 from django.db.models import Q
 from django.http import JsonResponse
 from django.utils.dateparse import parse_date
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -46,6 +46,7 @@ from .serializers import (
     CorrectionReadSerializer,
     CropGradeSerializer,
     CropSerializer,
+    CropWriteSerializer,
     DeliveryEditSerializer,
     DeliveryPreviewSerializer,
     DeliveryReadSerializer,
@@ -114,7 +115,7 @@ class FarmerListCreate(ListCreateAPIView):
         return queryset
 
 
-class FarmerDetail(RetrieveAPIView):
+class FarmerDetailView(GenericAPIView):
     serializer_class = FarmerSerializer
 
     def get_object(self):
@@ -122,30 +123,95 @@ class FarmerDetail(RetrieveAPIView):
             Farmer, self.kwargs["pk"], FarmerNotFound, "Farmer"
         )
 
+    @extend_schema(responses=FarmerSerializer)
+    def get(self, request, pk):
+        return Response(FarmerSerializer(self.get_object()).data)
+
+    @extend_schema(request=FarmerSerializer, responses=FarmerSerializer)
+    def patch(self, request, pk):
+        farmer = self.get_object()
+        serializer = FarmerSerializer(farmer, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+        return Response(FarmerSerializer(updated).data)
+
 
 class FarmerLedgerView(RetrieveAPIView):
     serializer_class = FarmerLedgerSerializer
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                "from",
+                type=str,
+                description="ISO date; lower bound on accounting date (inclusive).",
+            ),
+            OpenApiParameter(
+                "to",
+                type=str,
+                description="ISO date; upper bound on accounting date (inclusive).",
+            ),
+        ],
+        responses=FarmerLedgerSerializer,
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_object(self):
         farmer = _get_or_not_found(
             Farmer, self.kwargs["pk"], FarmerNotFound, "Farmer"
         )
-        return build_farmer_ledger(farmer)
+        params = self.request.query_params
+        since = _date(params["from"], "from") if "from" in params else None
+        until = _date(params["to"], "to") if "to" in params else None
+        if since is not None and until is not None and since > until:
+            raise DRFValidationError(
+                {
+                    "from": [
+                        {
+                            "code": "invalid",
+                            "message": "'from' must not be after 'to'.",
+                        }
+                    ]
+                }
+            )
+        return build_farmer_ledger(farmer, since=since, until=until)
 
 
 # --- Crops and grades -------------------------------------------------------
 
 
-class CropList(ListAPIView):
+class CropListCreate(ListCreateAPIView):
     serializer_class = CropSerializer
-    queryset = Crop.objects.all().order_by("name")
+
+    def get_queryset(self):
+        return Crop.objects.prefetch_related("grades").order_by("name")
+
+    @extend_schema(request=CropWriteSerializer, responses=CropSerializer)
+    def create(self, request, *args, **kwargs):
+        serializer = CropWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        crop = serializer.save()
+        return Response(CropSerializer(crop).data, status=status.HTTP_201_CREATED)
 
 
-class CropDetail(RetrieveAPIView):
+class CropDetailView(GenericAPIView):
     serializer_class = CropSerializer
 
     def get_object(self):
         return _get_or_not_found(Crop, self.kwargs["pk"], CropNotFound, "Crop")
+
+    @extend_schema(responses=CropSerializer)
+    def get(self, request, pk):
+        return Response(CropSerializer(self.get_object()).data)
+
+    @extend_schema(request=CropWriteSerializer, responses=CropSerializer)
+    def patch(self, request, pk):
+        crop = self.get_object()
+        serializer = CropWriteSerializer(crop, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+        return Response(CropSerializer(updated).data)
 
 
 class CropGradeList(ListAPIView):

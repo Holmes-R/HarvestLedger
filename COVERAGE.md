@@ -7,12 +7,12 @@ database. From `backend/`:
 venv/Scripts/python.exe -m pytest --reuse-db -q -ra --cov=procurement --cov-report=term --cov-report=json:coverage.json
 ```
 
-Result: **396 passed**, exit code 0, with no reported skips or xfails.
+Result: **450 passed**, exit code 0, with no reported skips or xfails.
 
-- Whole `procurement` package: **1,751 statements, 88 missed**, **95%**.
-- `procurement.services` (business rules): **623 statements, 24 missed**,
+- Whole `procurement` package: **1,960 statements, 94 missed**, **95%**.
+- `procurement.services` (business rules): **627 statements, 26 missed**,
   **~96%** — the 80% service target is met.
-- `procurement.api` (M3 HTTP layer): **632 statements, 39 missed**, **~94%**.
+- `procurement.api` (M3 HTTP layer): **837 statements, 43 missed**, **~95%**.
 
 Line coverage alone does not establish correctness of every rule.
 

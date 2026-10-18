@@ -150,7 +150,13 @@ class LedgerPayout:
 
 @dataclass(frozen=True)
 class FarmerLedger:
-    """Immutable read-only snapshot of one farmer's ledger."""
+    """Immutable read-only snapshot of one farmer's ledger.
+
+    ``advances`` / ``deliveries`` / ``payouts`` are the (optionally bounded)
+    history rows. The aggregate totals below are always computed over the
+    **full** history, and ``outstanding_advance`` / ``reconciliation`` describe
+    the whole account, so bounding the history never distorts the balance.
+    """
 
     farmer_id: int
     name: str
@@ -160,10 +166,14 @@ class FarmerLedger:
     deliveries: tuple[LedgerDelivery, ...]
     payouts: tuple[LedgerPayout, ...]
     reconciliation: AdvanceReconciliation
-
-    @property
-    def total_advances(self) -> Decimal:
-        return quantize_money(sum((a.amount for a in self.advances), ZERO))
+    total_advances: Decimal
+    settled_earnings: Decimal
+    total_recovered: Decimal
+    draft_projection: Decimal
+    unassigned_earnings: Decimal
+    total_recorded_amount: Decimal
+    history_from: date | None = None
+    history_to: date | None = None
 
     @property
     def settled_payouts(self) -> tuple[LedgerPayout, ...]:
@@ -174,36 +184,8 @@ class FarmerLedger:
         return tuple(p for p in self.payouts if p.is_draft)
 
     @property
-    def settled_earnings(self) -> Decimal:
-        """Gross of FINALISED/PAID payouts -- earnings already locked in."""
-        return quantize_money(sum((p.gross_amount for p in self.settled_payouts), ZERO))
-
-    @property
-    def total_recovered(self) -> Decimal:
-        """Advance actually recovered by FINALISED/PAID payouts."""
-        return quantize_money(
-            sum((p.advance_deduction for p in self.settled_payouts), ZERO)
-        )
-
-    @property
-    def draft_projection(self) -> Decimal:
-        """Gross of DRAFT payouts -- a projection, not yet an earning."""
-        return quantize_money(sum((p.gross_amount for p in self.draft_payouts), ZERO))
-
-    @property
     def unassigned_deliveries(self) -> tuple[LedgerDelivery, ...]:
         return tuple(d for d in self.deliveries if not d.is_assigned)
-
-    @property
-    def unassigned_earnings(self) -> Decimal:
-        return quantize_money(
-            sum((d.signed_amount for d in self.unassigned_deliveries), ZERO)
-        )
-
-    @property
-    def total_recorded_amount(self) -> Decimal:
-        """Every delivery/note amount counted exactly once."""
-        return quantize_money(sum((d.signed_amount for d in self.deliveries), ZERO))
 
     @property
     def earnings_identity_holds(self) -> bool:
@@ -220,12 +202,46 @@ class FarmerLedger:
         return self.reconciliation.is_reconciled
 
 
-def build_farmer_ledger(farmer: Farmer) -> FarmerLedger:
+def _money_sum(values) -> Decimal:
+    return quantize_money(sum(values, ZERO))
+
+
+def _aggregate(advances, deliveries, payouts) -> dict:
+    """Full-history totals (independent of any history window)."""
+    settled = tuple(p for p in payouts if p.is_settled)
+    draft = tuple(p for p in payouts if p.is_draft)
+    unassigned = tuple(d for d in deliveries if not d.is_assigned)
+    return {
+        "total_advances": _money_sum(a.amount for a in advances),
+        "settled_earnings": _money_sum(p.gross_amount for p in settled),
+        "total_recovered": _money_sum(p.advance_deduction for p in settled),
+        "draft_projection": _money_sum(p.gross_amount for p in draft),
+        "unassigned_earnings": _money_sum(d.signed_amount for d in unassigned),
+        "total_recorded_amount": _money_sum(d.signed_amount for d in deliveries),
+    }
+
+
+def _within(value, since, until) -> bool:
+    if value is None:
+        return since is None and until is None
+    if since is not None and value < since:
+        return False
+    return not (until is not None and value > until)
+
+
+def build_farmer_ledger(farmer: Farmer, *, since: date | None = None,
+                        until: date | None = None) -> FarmerLedger:
     """Return the read-only ledger snapshot for ``farmer``.
 
     Reads run in one ``transaction.atomic()`` block so the snapshot is
     consistent. No row is created, updated or deleted; nothing is materialised
     beyond the returned frozen dataclasses.
+
+    ``since`` / ``until`` bound the returned history rows by their accounting
+    date (advances by ``given_on``, deliveries by ``accounting_date``, payouts by
+    ``week_start``). The aggregate totals, the outstanding advance and the
+    reconciliation always cover the full history, so a bounded view never
+    changes the account balance.
     """
     if farmer is None or getattr(farmer, "pk", None) is None:
         raise ValidationError("A saved farmer is required.", code="farmer_required")
@@ -298,13 +314,20 @@ def build_farmer_ledger(farmer: Farmer) -> FarmerLedger:
 
         reconciliation = reconcile_outstanding(farmer)
 
+    aggregates = _aggregate(advances, deliveries, payouts)
+
     return FarmerLedger(
         farmer_id=farmer.pk,
         name=farmer.name,
         phone=farmer.phone,
         outstanding_advance=quantize_money(farmer.outstanding_advance),
-        advances=advances,
-        deliveries=deliveries,
-        payouts=payouts,
+        advances=tuple(a for a in advances if _within(a.given_on, since, until)),
+        deliveries=tuple(
+            d for d in deliveries if _within(d.accounting_date, since, until)
+        ),
+        payouts=tuple(p for p in payouts if _within(p.week_start, since, until)),
         reconciliation=reconciliation,
+        history_from=since,
+        history_to=until,
+        **aggregates,
     )
