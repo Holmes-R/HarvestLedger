@@ -20,6 +20,16 @@ Finalisation
 :func:`finalise_payout` freezes the payout and recovers
 ``min(outstanding_advance, 30% of gross_amount)`` from the farmer's balance,
 exactly once. Every write is atomic and locks farmer -> payout -> deliveries.
+
+Settlement
+----------
+:func:`mark_payout_paid` performs the only approved settlement transition,
+FINALISED -> PAID, and preserves every frozen financial value. It never recovers
+the advance again (the balance is already net of the finalised deduction), so a
+repeated or concurrent call cannot double-recover. A non-positive ``net_amount``
+(a debit-note-only week, for instance) is payable as-is: recovery is already zero
+for a non-positive gross (see :func:`procurement.services.money.advance_recovery`)
+and no additional rule is invented here.
 """
 
 from datetime import date
@@ -36,7 +46,12 @@ from .errors import PayoutStateError
 from .locking import lock_deliveries, lock_farmer, lock_payout
 from .money import advance_recovery, quantize_money
 
-__all__ = ["PayoutStateError", "build_weekly_payout", "finalise_payout"]
+__all__ = [
+    "PayoutStateError",
+    "build_weekly_payout",
+    "finalise_payout",
+    "mark_payout_paid",
+]
 
 ZERO = Decimal("0.00")
 _SETTLED_STATUSES = (PayoutStatus.FINALISED, PayoutStatus.PAID)
@@ -111,7 +126,23 @@ def build_weekly_payout(farmer: Farmer, week_start: date) -> Payout | None:
 
 
 def finalise_payout(payout: Payout) -> Payout:
-    """Finalise ``payout``, recover any advance, and freeze the totals."""
+    """Finalise ``payout``, recover any advance, and freeze the totals.
+
+    Runs in a single ``transaction.atomic()`` block. Locks are taken in the
+    canonical order (farmer -> payout -> deliveries by pk); the membership is
+    re-validated (every included delivery belongs to the payout's farmer) and the
+    totals are recomputed from the stored delivery snapshots. The recovery is the
+    documented ``min(outstanding_advance, 30% of gross_amount)`` (ROUND_HALF_UP)
+    taken from the *locked* balance, and it reduces ``outstanding_advance``
+    exactly once.
+
+    Only a DRAFT payout can be finalised; a FINALISED/PAID payout raises
+    :class:`PayoutStateError` before any write, so a repeated (or concurrent)
+    finalisation never applies recovery again.
+    """
+    if payout is None or getattr(payout, "pk", None) is None:
+        raise ValidationError("A saved payout is required.", code="required")
+
     with transaction.atomic():
         farmer = lock_farmer(payout.farmer_id)
         locked = lock_payout(payout.pk)
@@ -121,6 +152,14 @@ def finalise_payout(payout: Payout) -> Payout:
             )
 
         deliveries = lock_deliveries(locked.deliveries.all())
+        for delivery in deliveries:
+            if delivery.farmer_id != locked.farmer_id:
+                raise PayoutStateError(
+                    "Payout membership is inconsistent: delivery "
+                    f"{delivery.pk} belongs to farmer {delivery.farmer_id}, not "
+                    f"{locked.farmer_id}."
+                )
+
         gross = quantize_money(sum((d.amount for d in deliveries), ZERO))
         deduction = advance_recovery(gross, farmer.outstanding_advance)
 
@@ -129,6 +168,7 @@ def finalise_payout(payout: Payout) -> Payout:
         locked.net_amount = quantize_money(gross - deduction)
         locked.status = PayoutStatus.FINALISED
         locked.finalised_at = timezone.now()
+        locked.paid_at = None
         locked.save(
             update_fields=[
                 "gross_amount",
@@ -136,6 +176,7 @@ def finalise_payout(payout: Payout) -> Payout:
                 "net_amount",
                 "status",
                 "finalised_at",
+                "paid_at",
             ]
         )
 
@@ -143,6 +184,34 @@ def finalise_payout(payout: Payout) -> Payout:
             farmer.outstanding_advance - deduction
         )
         farmer.save(update_fields=["outstanding_advance"])
+
+    payout.refresh_from_db()
+    return payout
+
+
+def mark_payout_paid(payout: Payout) -> Payout:
+    """Settle a FINALISED payout: the only approved transition is FINALISED -> PAID.
+
+    The frozen ``gross_amount``/``advance_deduction``/``net_amount`` and the
+    farmer's ``outstanding_advance`` are left untouched -- the advance was already
+    recovered at finalisation, so this never recovers it again. A DRAFT (not yet
+    finalised) or an already-PAID payout raises :class:`PayoutStateError`. A
+    non-positive ``net_amount`` is payable as-is (see the module docstring).
+    """
+    if payout is None or getattr(payout, "pk", None) is None:
+        raise ValidationError("A saved payout is required.", code="required")
+
+    with transaction.atomic():
+        lock_farmer(payout.farmer_id)
+        locked = lock_payout(payout.pk)
+        if locked.status != PayoutStatus.FINALISED:
+            raise PayoutStateError(
+                "Only a finalised payout can be marked paid; this payout is "
+                f"{locked.status}."
+            )
+        locked.status = PayoutStatus.PAID
+        locked.paid_at = timezone.now()
+        locked.save(update_fields=["status", "paid_at"])
 
     payout.refresh_from_db()
     return payout

@@ -17,13 +17,18 @@ gross_amount)``, reduces the farmer's balance once, and freezes the payout.
 ``PayoutStateError`` is raised for illegal transitions (re-finalising a payout,
 re-building a finalised week).
 
+``procurement.services.payouts.mark_payout_paid(payout) -> Payout`` -- the only
+approved settlement transition, FINALISED -> PAID; preserves the frozen amounts
+and never recovers the advance again. ``PayoutStateError`` is raised for a DRAFT
+or an already-PAID payout.
+
 ``procurement.services.advances.post_advance(farmer, amount, given_on)`` --
 increases the farmer's outstanding balance.
 
 ``procurement.services.delivery.record_delivery(...)`` -- freezes a delivery.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -76,7 +81,9 @@ def _record_delivery(farmer, grade, delivered_on, gross="100.000", moisture="14.
     )
 
 
-def _model_delivery(farmer, grade, accounting_date, price=Decimal("24.50")):
+def _model_delivery(
+    farmer, grade, accounting_date, price=Decimal("24.50"), amount=Decimal("2450.00")
+):
     return Delivery.objects.create(
         farmer=farmer,
         kind=DeliveryKind.PROCUREMENT,
@@ -86,7 +93,7 @@ def _model_delivery(farmer, grade, accounting_date, price=Decimal("24.50")):
         gross_weight_kg=Decimal("100.000"),
         moisture_percent=Decimal("14.00"),
         applied_price=price,
-        amount=Decimal("2450.00"),
+        amount=amount,
     )
 
 
@@ -478,3 +485,343 @@ def test_concurrent_generation_creates_one_draft_and_assigns_each_once():
     assert set(draft.deliveries.values_list("pk", flat=True)) == {
         d.pk for d in deliveries
     }
+
+
+# --- Finalisation: recovery bounds ----------------------------------------
+
+
+@pytest.mark.m2
+def test_recovery_below_the_cap_recovers_the_whole_outstanding(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("100.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START)  # gross 2450.00, cap 735.00
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+
+    assert payout.advance_deduction == Decimal("100.00")
+    assert farmer.outstanding_advance == Decimal("0.00")
+    assert payout.net_amount == Decimal("2350.00")
+
+
+@pytest.mark.m2
+def test_recovery_equal_to_the_cap_recovers_exactly_the_cap(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("735.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START)  # gross 2450.00, cap 735.00
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+
+    assert payout.advance_deduction == Decimal("735.00")
+    assert farmer.outstanding_advance == Decimal("0.00")
+
+
+@pytest.mark.m2
+def test_recovery_above_the_cap_is_capped_and_carries_the_remainder(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("1000.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START)  # gross 2450.00, cap 735.00
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+
+    assert payout.advance_deduction == Decimal("735.00")
+    assert farmer.outstanding_advance == Decimal("265.00")
+
+
+@pytest.mark.m2
+@pytest.mark.parametrize(
+    ("gross", "expected_recovery"),
+    [
+        ("0.04", "0.01"),  # 0.012 -> 0.01 (down)
+        ("0.05", "0.02"),  # 0.015 -> 0.02 (exact half cent, HALF_UP)
+        ("0.15", "0.05"),  # 0.045 -> 0.05
+        ("0.34", "0.10"),  # 0.102 -> 0.10 (down)
+        ("0.35", "0.11"),  # 0.105 -> 0.11 (exact half cent, HALF_UP)
+        ("2450.00", "735.00"),
+    ],
+)
+def test_recovery_rounding_boundaries(farmer, grade, gross, expected_recovery):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("1000.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START, amount=Decimal(gross))
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+
+    assert payout.gross_amount == Decimal(gross)
+    assert payout.advance_deduction == Decimal(expected_recovery)
+    assert payout.net_amount == payout.gross_amount - payout.advance_deduction
+    assert farmer.outstanding_advance == Decimal("1000.00") - Decimal(expected_recovery)
+
+
+@pytest.mark.m2
+def test_large_advance_is_recovered_across_successive_weeks(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("2500.00"), WEEK_1_START)
+
+    expected_deductions = [
+        Decimal("735.00"),  # 30% of 2450.00
+        Decimal("735.00"),
+        Decimal("735.00"),
+        Decimal("295.00"),  # cap 735.00, but only 295.00 outstanding remains
+    ]
+    for offset, expected in enumerate(expected_deductions):
+        week_start = WEEK_1_START + timedelta(weeks=offset)
+        _model_delivery(farmer, grade, week_start)
+        payout = payouts.build_weekly_payout(farmer, week_start)
+        payouts.finalise_payout(payout)
+        payout.refresh_from_db()
+        farmer.refresh_from_db()
+        assert payout.advance_deduction == expected
+
+    assert farmer.outstanding_advance == Decimal("0.00")
+    assert advances.assert_outstanding_reconciles(farmer).is_reconciled
+
+
+# --- Finalisation: repeated, concurrent, rollback --------------------------
+
+
+@pytest.mark.m2
+def test_repeated_finalisation_does_not_recover_or_touch_the_frozen_payout(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("500.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START)
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+
+    frozen = (
+        payout.status,
+        payout.gross_amount,
+        payout.advance_deduction,
+        payout.net_amount,
+        payout.finalised_at,
+        farmer.outstanding_advance,
+    )
+
+    with pytest.raises(payouts.PayoutStateError):
+        payouts.finalise_payout(payout)
+
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+    assert (
+        payout.status,
+        payout.gross_amount,
+        payout.advance_deduction,
+        payout.net_amount,
+        payout.finalised_at,
+        farmer.outstanding_advance,
+    ) == frozen
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.m2
+def test_concurrent_finalisation_recovers_exactly_once():
+    from concurrent.futures import ThreadPoolExecutor
+
+    from django.db import connections
+
+    from procurement.services import advances, payouts
+
+    farmer = Farmer.objects.create(name="Asha", phone="9000000001", village="Kolar")
+    advances.post_advance(Farmer.objects.get(pk=farmer.pk), Decimal("1000.00"), WEEK_1_START)
+    crop = Crop.objects.create(
+        name="Maize", moisture_threshold=Decimal("14.00"), max_moisture=Decimal("20.00")
+    )
+    grade = CropGrade.objects.create(crop=crop, code="A")
+    _model_delivery(farmer, grade, WEEK_1_START)
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+
+    outcomes = []
+
+    def finalise(_index):
+        try:
+            payouts.finalise_payout(Payout.objects.get(pk=payout.pk))
+            outcomes.append("finalised")
+        except payouts.PayoutStateError:
+            outcomes.append("conflict")
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(finalise, range(2)))
+
+    assert sorted(outcomes) == ["conflict", "finalised"]
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+    assert payout.status == PayoutStatus.FINALISED
+    assert payout.advance_deduction == Decimal("735.00")
+    assert farmer.outstanding_advance == Decimal("265.00")
+
+
+@pytest.mark.m2
+def test_finalisation_rolls_back_every_write_on_failure(farmer, grade, monkeypatch):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("1000.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START)
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+
+    def explode(self, *args, **kwargs):
+        raise RuntimeError("simulated failure after the payout write")
+
+    monkeypatch.setattr(Farmer, "save", explode)
+
+    with pytest.raises(RuntimeError):
+        payouts.finalise_payout(payout)
+
+    fresh = Payout.objects.get(pk=payout.pk)
+    assert fresh.status == PayoutStatus.DRAFT
+    assert fresh.finalised_at is None
+    assert fresh.advance_deduction == Decimal("0.00")
+    farmer.refresh_from_db()
+    assert farmer.outstanding_advance == Decimal("1000.00")
+
+
+# --- Settlement (mark paid) ------------------------------------------------
+
+
+@pytest.mark.m2
+def test_mark_paid_preserves_the_finalised_values_and_balance(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("400.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_END)
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+
+    gross = sum(d.amount for d in payout.deliveries.all())
+    assert payout.gross_amount == gross
+    assert payout.net_amount == payout.gross_amount - payout.advance_deduction
+
+    frozen = (
+        payout.gross_amount,
+        payout.advance_deduction,
+        payout.net_amount,
+        payout.finalised_at,
+        set(payout.deliveries.values_list("pk", flat=True)),
+        farmer.outstanding_advance,
+    )
+
+    paid = payouts.mark_payout_paid(payout)
+    paid.refresh_from_db()
+    farmer.refresh_from_db()
+
+    assert paid.status == PayoutStatus.PAID
+    assert paid.paid_at is not None
+    assert (
+        paid.gross_amount,
+        paid.advance_deduction,
+        paid.net_amount,
+        paid.finalised_at,
+        set(paid.deliveries.values_list("pk", flat=True)),
+        farmer.outstanding_advance,
+    ) == frozen
+
+
+@pytest.mark.m2
+def test_mark_paid_requires_a_finalised_payout(farmer, grade):
+    from procurement.services import payouts
+
+    _model_delivery(farmer, grade, WEEK_1_START)
+    draft = payouts.build_weekly_payout(farmer, WEEK_1_START)
+
+    with pytest.raises(payouts.PayoutStateError):
+        payouts.mark_payout_paid(draft)
+
+    draft.refresh_from_db()
+    assert draft.status == PayoutStatus.DRAFT
+    assert draft.paid_at is None
+
+
+@pytest.mark.m2
+def test_mark_paid_twice_is_rejected_without_changing_paid_at(farmer, grade):
+    from procurement.services import payouts
+
+    _model_delivery(farmer, grade, WEEK_1_START)
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    paid = payouts.mark_payout_paid(payout)
+    paid.refresh_from_db()
+
+    with pytest.raises(payouts.PayoutStateError):
+        payouts.mark_payout_paid(paid)
+
+    paid.refresh_from_db()
+    assert paid.status == PayoutStatus.PAID
+    assert paid.paid_at is not None
+
+
+@pytest.mark.m2
+def test_refinalising_a_paid_payout_is_rejected(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("500.00"), WEEK_1_START)
+    _model_delivery(farmer, grade, WEEK_1_START)
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    paid = payouts.mark_payout_paid(payout)
+    farmer.refresh_from_db()
+    outstanding = farmer.outstanding_advance
+
+    with pytest.raises(payouts.PayoutStateError):
+        payouts.finalise_payout(paid)
+
+    farmer.refresh_from_db()
+    assert farmer.outstanding_advance == outstanding
+
+
+@pytest.mark.m2
+def test_nonpositive_net_settlement_is_payable_without_extra_recovery(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("500.00"), WEEK_1_START)
+    # The original lives outside WEEK_1 so the week holds only the debit note.
+    original = _model_delivery(farmer, grade, date(2026, 2, 9))
+    Delivery.objects.create(
+        farmer=farmer,
+        kind=DeliveryKind.DEBIT_NOTE,
+        original_delivery=original,
+        correction_magnitude=Decimal("100.00"),
+        reason="rate applied was too high",
+        accounting_date=WEEK_1_START,
+        amount=Decimal("-100.00"),
+    )
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    farmer.refresh_from_db()
+
+    assert payout.gross_amount == Decimal("-100.00")
+    assert payout.advance_deduction == Decimal("0.00")
+    assert payout.net_amount == Decimal("-100.00")
+    outstanding = farmer.outstanding_advance
+
+    paid = payouts.mark_payout_paid(payout)
+    paid.refresh_from_db()
+    farmer.refresh_from_db()
+
+    assert paid.status == PayoutStatus.PAID
+    assert paid.net_amount == Decimal("-100.00")
+    assert farmer.outstanding_advance == outstanding

@@ -116,9 +116,21 @@ instants from `django.utils.timezone.now()` -- never the business clock.
     new to add. A late record after finalisation yields a supplementary DRAFT.
     Generating/refreshing a DRAFT never changes `outstanding_advance`.
 - `finalise_payout(payout) -> Payout`
-  - DRAFT -> FINALISED exactly once; applies advance recovery
-    (`min(outstanding, round(0.30 * gross, 2))`); raises `PayoutStateError` if
-    not DRAFT.
+  - DRAFT -> FINALISED exactly once. Atomic; locks farmer -> payout ->
+    deliveries; re-validates that each included delivery belongs to the payout's
+    farmer; recomputes `gross_amount` from the stored snapshots; recovers
+    `min(outstanding_advance, round(0.30 * gross, 2))` (ROUND_HALF_UP) from the
+    **locked** balance; stores `advance_deduction`/`net_amount` and
+    `finalised_at`; reduces `outstanding_advance` exactly once. Raises
+    `PayoutStateError` for a non-DRAFT payout *before any write*, so a repeated
+    or concurrent finalisation never recovers again.
+- `mark_payout_paid(payout) -> Payout`
+  - The only approved transition is FINALISED -> PAID. Atomic; locks farmer ->
+    payout; preserves `gross_amount`/`advance_deduction`/`net_amount` and the
+    balance (never recovers again); stamps `paid_at`. Raises `PayoutStateError`
+    for a DRAFT (not finalised) or an already-PAID payout. A non-positive
+    `net_amount` is payable as-is -- recovery is already zero for a non-positive
+    gross (`money.advance_recovery`) and no extra rule is invented.
 
 ### `procurement.services.corrections`
 
