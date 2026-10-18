@@ -107,9 +107,14 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 ### `procurement.services.payouts`
 
 - `build_weekly_payout(farmer, week_start) -> Payout | None`
-  - Monday..Sunday window; assigns each unassigned delivery once; returns `None`
-    for an empty week. Reuses an existing DRAFT; adds a supplementary draft after
-    an earlier payout for the week is finalised.
+  - Normalises `week_start` to that week's Monday (`week_bounds`) and selects the
+    farmer's unassigned records by `accounting_date` in `[Mon, Sun]`, using their
+    **stored** `amount` (no re-pricing). At most one DRAFT per farmer/week;
+    repeated calls reuse it (no duplicates); membership changes and the recomputed
+    DRAFT totals happen together under the farmer lock. Returns `None` for an
+    empty week; raises `PayoutStateError` when the week is settled with nothing
+    new to add. A late record after finalisation yields a supplementary DRAFT.
+    Generating/refreshing a DRAFT never changes `outstanding_advance`.
 - `finalise_payout(payout) -> Payout`
   - DRAFT -> FINALISED exactly once; applies advance recovery
     (`min(outstanding, round(0.30 * gross, 2))`); raises `PayoutStateError` if
@@ -203,6 +208,14 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 | `...::test_monetary_identities` | `payouts.build_weekly_payout` / `money` |
 | `...::test_supplementary_payout_allowed_after_finalisation` | `payouts.build_weekly_payout` |
 | `...::test_no_advance_means_zero_deduction` | `payouts.finalise_payout` / `money.advance_recovery` |
+| `...::test_week_is_normalized_to_monday` | `payouts.build_weekly_payout` (normalization) |
+| `...::test_adjacent_weeks_and_other_farmers_are_excluded` | `payouts.build_weekly_payout` (accounting_date) |
+| `...::test_records_already_in_a_payout_are_not_reassigned` | `payouts.build_weekly_payout` (exclusivity) |
+| `...::test_repeated_generation_does_not_duplicate_and_refreshes_membership` | `payouts.build_weekly_payout` |
+| `...::test_generation_refreshes_stale_draft_totals` | `payouts.build_weekly_payout` (`_refresh_totals`) |
+| `...::test_empty_week_creates_no_payout_for_any_day_in_the_week` | `payouts.build_weekly_payout` (empty week) |
+| `...::test_supplementary_generation_does_not_change_outstanding` | `payouts.build_weekly_payout` + `advances` |
+| `...::test_concurrent_generation_creates_one_draft_and_assigns_each_once` | `payouts.build_weekly_payout` (farmer lock) |
 | `tests/integration/test_corrections.py::test_correction_inherits_farmer_and_stores_magnitude` (x2) | `corrections.record_correction` |
 | `...::test_correction_requires_finalised_or_paid_original` (x2) | `corrections.record_correction` (`ValidationError`) |
 | `...::test_correction_is_stamped_with_business_date` | `corrections.record_correction` / `clock` |

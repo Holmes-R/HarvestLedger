@@ -329,3 +329,152 @@ def test_no_advance_means_zero_deduction(farmer, grade):
 
     assert payout.advance_deduction == Decimal("0.00")
     assert payout.net_amount == payout.gross_amount
+
+
+# --- Draft generation: normalization, exclusivity, refresh, concurrency ----
+
+
+@pytest.mark.m2
+def test_week_is_normalized_to_monday(farmer, grade):
+    from procurement.services import payouts
+
+    inside = _record_delivery(farmer, grade, date(2026, 1, 7))  # Wednesday
+
+    payout = payouts.build_weekly_payout(farmer, date(2026, 1, 7))
+    assert payout.week_start == WEEK_1_START
+    assert payout.week_end == WEEK_1_END
+    assert set(payout.deliveries.values_list("pk", flat=True)) == {inside.pk}
+
+    # Any other day in the same week reuses the same DRAFT.
+    again = payouts.build_weekly_payout(farmer, date(2026, 1, 10))  # Saturday
+    assert again.pk == payout.pk
+    assert Payout.objects.filter(farmer=farmer).count() == 1
+
+
+@pytest.mark.m2
+def test_adjacent_weeks_and_other_farmers_are_excluded(farmer, grade):
+    from procurement.services import payouts
+
+    inside = _record_delivery(farmer, grade, WEEK_1_END)  # Sunday
+    _record_delivery(farmer, grade, date(2026, 1, 4))  # previous Sunday
+    _record_delivery(farmer, grade, WEEK_2_START)  # next Monday
+    other_farmer = Farmer.objects.create(
+        name="Bina", phone="9000000002", village="Kolar"
+    )
+    _record_delivery(other_farmer, grade, WEEK_1_START)
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    assert set(payout.deliveries.values_list("pk", flat=True)) == {inside.pk}
+
+
+@pytest.mark.m2
+def test_records_already_in_a_payout_are_not_reassigned(farmer, grade):
+    from procurement.services import payouts
+
+    delivery = _record_delivery(farmer, grade, WEEK_1_START)
+    existing = Payout.objects.create(
+        farmer=farmer, week_start=WEEK_1_START, week_end=WEEK_1_END
+    )
+    delivery.payout = existing
+    delivery.save(update_fields=["payout"])
+
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    assert payout.pk == existing.pk
+    assert set(payout.deliveries.values_list("pk", flat=True)) == {delivery.pk}
+    assert Payout.objects.filter(farmer=farmer).count() == 1
+
+
+@pytest.mark.m2
+def test_repeated_generation_does_not_duplicate_and_refreshes_membership(farmer, grade):
+    from procurement.services import payouts
+
+    first_delivery = _record_delivery(farmer, grade, WEEK_1_START)
+    draft = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    assert draft.gross_amount == Decimal("2450.00")
+
+    late = _record_delivery(farmer, grade, WEEK_1_END)
+    again = payouts.build_weekly_payout(farmer, WEEK_1_START)
+
+    assert again.pk == draft.pk
+    assert Payout.objects.filter(farmer=farmer).count() == 1
+    assert set(again.deliveries.values_list("pk", flat=True)) == {
+        first_delivery.pk,
+        late.pk,
+    }
+    assert again.gross_amount == Decimal("4900.00")
+    assert again.net_amount == Decimal("4900.00")
+
+
+@pytest.mark.m2
+def test_generation_refreshes_stale_draft_totals(farmer, grade):
+    from procurement.services import payouts
+
+    _record_delivery(farmer, grade, WEEK_1_START)
+    draft = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    Payout.objects.filter(pk=draft.pk).update(
+        gross_amount=Decimal("1.00"), net_amount=Decimal("1.00")
+    )
+
+    refreshed = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    assert refreshed.gross_amount == Decimal("2450.00")
+    assert refreshed.net_amount == Decimal("2450.00")
+
+
+@pytest.mark.m2
+def test_empty_week_creates_no_payout_for_any_day_in_the_week(farmer):
+    from procurement.services import payouts
+
+    assert payouts.build_weekly_payout(farmer, date(2026, 1, 8)) is None
+    assert Payout.objects.filter(farmer=farmer).count() == 0
+
+
+@pytest.mark.m2
+def test_supplementary_generation_does_not_change_outstanding(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("1000.00"), WEEK_1_START)
+    _record_delivery(farmer, grade, WEEK_1_START)
+    first = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(first)
+    farmer.refresh_from_db()
+    after_finalise = farmer.outstanding_advance
+
+    _record_delivery(farmer, grade, WEEK_1_END)
+    supplementary = payouts.build_weekly_payout(farmer, WEEK_1_START)
+
+    assert supplementary.pk != first.pk
+    assert supplementary.status == PayoutStatus.DRAFT
+    farmer.refresh_from_db()
+    assert farmer.outstanding_advance == after_finalise
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.m2
+def test_concurrent_generation_creates_one_draft_and_assigns_each_once():
+    from concurrent.futures import ThreadPoolExecutor
+
+    from django.db import connections
+
+    from procurement.services import payouts
+
+    farmer = Farmer.objects.create(name="Asha", phone="9000000001", village="Kolar")
+    crop = Crop.objects.create(
+        name="Maize", moisture_threshold=Decimal("14.00"), max_moisture=Decimal("20.00")
+    )
+    grade = CropGrade.objects.create(crop=crop, code="A")
+    deliveries = [_model_delivery(farmer, grade, WEEK_1_START) for _ in range(8)]
+
+    def build(_index):
+        try:
+            payouts.build_weekly_payout(Farmer.objects.get(pk=farmer.pk), WEEK_1_START)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(build, range(8)))
+
+    assert Payout.objects.filter(farmer=farmer).count() == 1
+    draft = Payout.objects.get(farmer=farmer)
+    assert set(draft.deliveries.values_list("pk", flat=True)) == {
+        d.pk for d in deliveries
+    }
