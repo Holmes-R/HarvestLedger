@@ -20,6 +20,7 @@ All domain (business-rule) errors derive from `ServiceError` and carry a stable
 | `PriceNotFound` | `price_not_found` | no price entry is effective on/before the date |
 | `GradeNotAllowed` | `grade_not_allowed` | grade does not exist for the crop (disallowed grade) |
 | `PriceAlreadyExists` | `price_already_exists` | `(grade, effective_from)` is already priced |
+| `AdvanceReconciliationError` | `advance_reconciliation_failed` | advances/recoveries disagree with the stored balance |
 | `MoistureExceedsMaximum` | `moisture_exceeds_maximum` | delivery moisture `>` crop `max_moisture` |
 | `PayoutStateError` | `payout_state_error` | a payout operation is attempted from an invalid state |
 
@@ -60,9 +61,21 @@ instants from `django.utils.timezone.now()` -- never the business clock.
     `deduction_percent` (2dp), `deduction_kg` / `net_kg` (5dp), `amount` (2dp).
   - Raises `ValidationError` for non-positive / over-precise inputs and invalid
     moisture bounds; raises `MoistureExceedsMaximum` above `max_moisture`.
-- `record_delivery(*, farmer, crop_grade, delivered_on, gross_weight_kg, moisture_percent) -> Delivery`
-  - Resolves the price, computes the breakdown, freezes the snapshot and writes
-    the delivery atomically. Only `PROCUREMENT` deliveries carry measurements.
+- `preview_delivery(*, farmer, crop_grade, delivered_on, gross_weight_kg, moisture_percent, clock=None) -> DeliveryPreview`
+  - Validates inputs, rejects a future `delivered_on` against the injected clock
+    (`future_delivery_date`), resolves the price and returns the full breakdown.
+    **Persists nothing.**
+- `record_delivery(*, farmer, crop_grade, delivered_on, gross_weight_kg, moisture_percent, clock=None) -> Delivery`
+  - Re-validates and re-calculates authoritatively (never trusts a preview),
+    freezes the snapshot (`threshold_used`, breakdown, `applied_price`,
+    `price_list_entry` FK) and writes atomically under the farmer lock;
+    `accounting_date == delivered_on` for `PROCUREMENT`.
+- `edit_delivery(delivery, *, delivered_on=None, crop_grade=None, gross_weight_kg=None, moisture_percent=None, clock=None) -> Delivery`
+  - Recalculates an existing `PROCUREMENT` delivery. Raises `PayoutStateError`
+    for a delivery in a FINALISED/PAID payout. The frozen price is preserved
+    unless `crop_grade`/`delivered_on` changes. If the delivery belongs to a
+    DRAFT payout the draft totals are refreshed; a week change moves the delivery
+    to the correct DRAFT (created if needed) and removes an emptied old draft.
 
 ### `procurement.services.pricing`
 
@@ -81,8 +94,15 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 ### `procurement.services.advances`
 
 - `post_advance(farmer, amount, given_on) -> Advance`
-  - Locks the farmer, accumulates `outstanding_advance`. Same-day advances are
-    separate records (`(farmer, given_on)` is not a dedup key).
+  - Validates a saved farmer and a positive, in-precision `Decimal` amount;
+    locks the farmer inside `transaction.atomic()` and increases
+    `outstanding_advance` exactly once. Same-day advances are separate records
+    (`(farmer, given_on)` is not a dedup key). Recovery is **not** done here.
+- `reconcile_outstanding(farmer) -> AdvanceReconciliation` / `assert_outstanding_reconciles(farmer)`
+  - Read-only check that `sum(advances) - sum(advance_deduction on FINALISED/PAID
+    payouts)` equals the stored balance; each payout counts once (`PAID` is a
+    later state of the same payout, not a second recovery). Reports drift via
+    `AdvanceReconciliationError` and never repairs the balance.
 
 ### `procurement.services.payouts`
 
@@ -148,10 +168,29 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 | `tests/integration/test_delivery_service.py::test_missing_price_writes_nothing` | `delivery.record_delivery` (`PriceNotFound`) |
 | `...::test_freezes_threshold_price_and_breakdown` | `delivery.record_delivery` |
 | `...::test_moisture_over_max_writes_nothing` | `delivery.record_delivery` (`MoistureExceedsMaximum`) |
+| `...::test_preview_returns_full_breakdown_and_persists_nothing` | `delivery.preview_delivery` |
+| `...::test_preview_matches_the_saved_snapshot` | `delivery.preview_delivery` + `record_delivery` |
+| `...::test_record_re_resolves_price_and_ignores_the_earlier_preview` | `delivery.record_delivery` (authoritative) |
+| `...::test_future_delivery_date_is_rejected` | `delivery.preview_delivery` / `record_delivery` (`future_delivery_date`) |
+| `...::test_delivery_on_the_business_date_is_allowed` | `delivery.record_delivery` (injected clock) |
+| `...::test_preview_requires_a_saved_farmer_and_grade` | `delivery.preview_delivery` (`ValidationError`) |
+| `...::test_snapshot_is_preserved_when_a_new_price_is_added` | `delivery.record_delivery` snapshot |
+| `...::test_edit_refreshes_the_draft_totals` | `delivery.edit_delivery` + DRAFT refresh |
+| `...::test_edit_preserves_the_frozen_price_when_a_new_price_is_added` | `delivery.edit_delivery` (frozen price) |
+| `...::test_edit_to_a_new_date_re_resolves_the_price` | `delivery.edit_delivery` (basis change) |
+| `...::test_edit_moves_the_delivery_to_the_new_week_draft` | `delivery.edit_delivery` + draft reassignment |
+| `...::test_edit_is_rejected_for_a_settled_payout` | `delivery.edit_delivery` (`PayoutStateError`) |
+| `...::test_edit_rejects_amounts_above_the_moisture_maximum` | `delivery.edit_delivery` (`MoistureExceedsMaximum`) |
 | `tests/integration/test_advances.py::test_posting_accumulates_outstanding_balance` | `advances.post_advance` |
 | `...::test_same_day_advances_are_separate_records` | `advances.post_advance` |
 | `...::test_nonpositive_amount_is_rejected` (x2) | `advances.post_advance` (`ValidationError`) |
 | `...::test_overprecise_amount_is_rejected` | `advances.post_advance` |
+| `...::test_posting_requires_a_saved_farmer` | `advances.post_advance` (`farmer_required`) |
+| `...::test_failure_rolls_back_the_advance_and_the_balance` | `advances.post_advance` (atomic rollback) |
+| `...::test_reconciliation_holds_before_and_after_payout_recovery` | `advances.reconcile_outstanding` + `payouts.finalise_payout` |
+| `...::test_paid_is_not_counted_as_a_second_recovery` | `advances.reconcile_outstanding` (PAID once) |
+| `...::test_reconciliation_reports_drift_without_repairing_it` | `advances.assert_outstanding_reconciles` (`AdvanceReconciliationError`) |
+| `...::test_concurrent_advances_do_not_lose_balance_updates` | `advances.post_advance` (farmer lock) |
 | `tests/integration/test_payouts.py::test_monday_to_sunday_selection` | `payouts.build_weekly_payout` |
 | `...::test_generation_assigns_each_delivery_once` | `payouts.build_weekly_payout` |
 | `...::test_draft_payout_does_not_reduce_outstanding` | `payouts.build_weekly_payout` |

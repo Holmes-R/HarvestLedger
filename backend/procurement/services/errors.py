@@ -42,6 +42,16 @@ class GradeNotAllowed(ServiceError):
     default_message = "The grade is not allowed for the requested crop."
 
 
+class AdvanceReconciliationError(ServiceError):
+    """Recorded advances and recoveries do not match the stored balance."""
+
+    code = "advance_reconciliation_failed"
+    default_message = (
+        "Recorded advances and recoveries do not match the stored outstanding "
+        "balance."
+    )
+
+
 class PriceAlreadyExists(ServiceError):
     """A price entry already exists for this grade and effective date."""
 
