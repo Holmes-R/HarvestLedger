@@ -30,9 +30,11 @@ Each module re-exports the errors it raises
 
 Input/field validation uses Django's `ValidationError` with an explicit
 `code=`, kept separate from the domain exceptions above. Codes in use:
-`invalid_kind`, `not_positive`, `reason_required`, `original_not_settled`,
-`invalid_moisture_bounds`, `not_finite`, `too_precise`, `too_many_digits`
-(see `validation.py` / `precision.py`).
+`invalid_kind`, `not_positive`, `reason_required`, `original_required`,
+`original_not_settled`, `farmer_required`, `crop_grade_required`, `required`,
+`invalid_date`, `future_delivery_date`, `not_editable`, `invalid_moisture_bounds`,
+`invalid_decimal`, `too_many_decimal_places` (see `validation.py` /
+`precision.py`).
 
 ## Business clock (injection)
 
@@ -135,9 +137,15 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 ### `procurement.services.corrections`
 
 - `record_correction(original_delivery, kind, magnitude, reason, *, clock=None) -> Delivery`
-  - CREDIT_NOTE (+) / DEBIT_NOTE (-) against a FINALISED/PAID original; inherits
-    the farmer, never mutates the original, stamps `accounting_date` with the
-    injected/`get_clock()` IST business date.
+  - CREDIT_NOTE (+) / DEBIT_NOTE (-) against a FINALISED/PAID original. Requires a
+    saved original (`original_required`), a valid note kind (`invalid_kind`), a
+    positive in-precision magnitude (`not_positive`/`too_precise`) and a non-blank
+    reason (`reason_required`). Inherits the original's farmer (same farmer by
+    construction), never mutates the original or its finalised statement, and
+    stamps `accounting_date` with the injected/`get_clock()` IST business date,
+    which selects the target payout week. The signed `amount` flows into exactly
+    one payout (single `payout` FK); several notes may reference the same
+    original. Atomic and farmer-first locked (`lock_farmer` -> `lock_payout`).
 
 ### Helpers
 
@@ -236,6 +244,21 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 | `...::test_correction_joining_a_finalised_week_needs_a_supplementary` | `corrections.record_correction` + `payouts.build_weekly_payout` |
 | `...::test_correction_is_included_once_and_original_snapshot_is_unchanged` | `corrections.record_correction` + `payouts.build_weekly_payout` |
 | `...::test_correction_accepts_an_injected_business_clock` | `corrections.record_correction` (injected `clock=`) |
+| `...::test_correction_requires_an_existing_original` | `corrections.record_correction` (`original_required`) |
+| `...::test_correction_rejects_an_unsaved_original` | `corrections.record_correction` (`original_required`) |
+| `...::test_correction_inherits_the_originals_farmer` | `corrections.record_correction` (farmer) |
+| `...::test_invalid_correction_kind_is_rejected` (x4) | `corrections.record_correction` (`invalid_kind`) |
+| `...::test_nonpositive_magnitude_is_rejected` (x2) | `corrections.record_correction` (`not_positive`) |
+| `...::test_overprecise_magnitude_is_rejected` | `corrections.record_correction` (`too_many_decimal_places`) |
+| `...::test_blank_reason_is_rejected` (x3) | `corrections.record_correction` (`reason_required`) |
+| `...::test_signed_amount_matches_the_kind` (x2) | `corrections.record_correction` (signed `amount`) |
+| `...::test_correction_week_follows_the_accounting_date` | `corrections.record_correction` + `payouts.build_weekly_payout` |
+| `...::test_correction_on_a_sunday_joins_that_weeks_payout` | `corrections.record_correction` + supplementary |
+| `...::test_multiple_corrections_may_reference_one_original` | `corrections.record_correction` (no one-note limit) |
+| `...::test_correction_enters_exactly_one_payout` | `corrections` + `payouts.build_weekly_payout` |
+| `...::test_correction_leaves_the_finalised_statement_unchanged` | `corrections.record_correction` (immutability) |
+| `...::test_debit_only_week_is_nonpositive_and_payable_without_recovery` | `corrections` + `payouts.finalise_payout`/`mark_payout_paid` |
+| `...::test_concurrent_correction_inclusion_assigns_the_note_once` | `corrections` + `payouts.build_weekly_payout` (farmer lock) |
 
 `tests/unit/test_clock.py` covers the clock/date helpers directly
 (`business_date`, `week_*`, `business_week_bounds`, context-local `use_clock`),

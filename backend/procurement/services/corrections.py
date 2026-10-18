@@ -1,11 +1,19 @@
 """Credit/debit note corrections (assignment rule: immutability).
 
 A correction adjusts a delivery that has already been finalised or paid; the
-original is never rewritten. The note inherits the original's farmer, is stamped
-with the **business date** it is recorded (``get_clock().today()``) -- which,
-not the original ``delivered_on``, selects the payout week -- and carries a
-signed ``amount`` (credit ``+``, debit ``-``) plus the positive
-``correction_magnitude`` and a reason.
+original is never rewritten and the finalised statement it belongs to is left
+untouched. The note inherits the original's farmer (so the correction always
+stays with the same farmer as the original -- the service takes no separate
+farmer), is stamped with the **business date** it is recorded
+(``get_clock().today()``) -- which, not the original ``delivered_on``, selects
+the payout week -- and carries a signed ``amount`` (credit ``+``, debit ``-``)
+plus the positive ``correction_magnitude`` and a reason.
+
+A correction is an ordinary ``Delivery`` of kind ``CREDIT_NOTE``/``DEBIT_NOTE``
+-- never a fake negative ordinary weight -- and is pulled into exactly one payout
+by ``procurement.services.payouts.build_weekly_payout`` through the single
+``Delivery.payout`` foreign key. Nothing restricts an original to a single note:
+several corrections may reference the same original, each entering one payout.
 """
 
 from decimal import Decimal
@@ -47,6 +55,11 @@ def record_correction(
     ``clock`` (a :class:`~procurement.clock.Clock`) is injected for the business
     date; it defaults to :func:`~procurement.clock.get_clock`.
     """
+    if original_delivery is None or getattr(original_delivery, "pk", None) is None:
+        raise ValidationError(
+            "An existing original delivery is required.", code="original_required"
+        )
+
     if kind not in GRADE_NOTE_KINDS:
         raise ValidationError(
             "kind must be a credit or debit note.", code="invalid_kind"
