@@ -7,6 +7,7 @@ import pytest
 from procurement import scenarios as sc
 from procurement.clock import week_bounds
 from procurement.management.commands import seed_data as sd
+from procurement.models import indian_mobile_validator
 
 REQUIRED_CATEGORIES = {
     "multiple-weeks",
@@ -52,9 +53,9 @@ def test_multiple_weeks_spans_three_weeks():
     assert len(weeks) == 3
 
 
-def test_seed_farmers_use_non_contact_phone_placeholders():
+def test_seed_farmers_use_format_valid_example_phones():
     for farmer in sd.DEMO_FARMERS:
-        assert farmer.phone.startswith("00000000")
+        indian_mobile_validator(farmer.phone)
 
 
 def test_seed_prices_reference_existing_grades_and_are_effective_dated():

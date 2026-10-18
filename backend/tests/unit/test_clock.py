@@ -10,6 +10,7 @@ from procurement.clock import (
     FrozenClock,
     SystemClock,
     business_date,
+    business_week_bounds,
     get_clock,
     use_clock,
     week_bounds,
@@ -86,3 +87,38 @@ def test_week_bounds_must_use_ist_not_utc():
     assert ist_day == date(2026, 1, 5)
     assert week_bounds(ist_day) == (date(2026, 1, 5), date(2026, 1, 11))
     assert week_bounds(instant.date()) == (date(2025, 12, 29), date(2026, 1, 4))
+
+
+def test_business_week_bounds_uses_ist_not_utc_date():
+    # The same instant whose UTC date (2026-01-04, a Sunday) and IST date
+    # (2026-01-05, a Monday) differ must resolve to the IST-based week.
+    instant = _utc(2026, 1, 4, 18, 45)
+    assert instant.date() != business_date(instant)
+    assert business_week_bounds(instant) == (date(2026, 1, 5), date(2026, 1, 11))
+
+
+@pytest.mark.parametrize(
+    "instant",
+    [
+        _utc(2026, 1, 5, 0, 0),
+        _utc(2026, 1, 5, 18, 30),  # 00:00 next IST day
+        _utc(2026, 1, 11, 18, 29),  # still Sunday IST
+        _utc(2026, 3, 31, 23, 0),
+    ],
+)
+def test_business_week_bounds_matches_business_date(instant):
+    ist_day = business_date(instant)
+    assert business_week_bounds(instant) == week_bounds(ist_day)
+
+
+def test_use_clock_override_is_context_local_and_restores():
+    outer = FrozenClock(_utc(2026, 1, 6, 6, 0))
+    inner = FrozenClock(_utc(2026, 2, 10, 6, 0))
+    with use_clock(outer):
+        assert get_clock() is outer
+        with use_clock(inner):
+            assert get_clock() is inner
+            assert get_clock().today() == date(2026, 2, 10)
+        assert get_clock() is outer
+    assert isinstance(get_clock(), SystemClock)
+    assert get_clock() is not outer and get_clock() is not inner

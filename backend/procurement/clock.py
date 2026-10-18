@@ -15,13 +15,18 @@ date is in the future) MUST use the IST-aware clock below -- never the raw UTC
 date. 18:30 UTC is already the next day in IST, so a Sunday-evening UTC instant
 can be a Monday business date.
 
-Clock interface / injection point
----------------------------------
-``Clock`` is the small interface the M2 payout engine depends on. The active
-clock is read through :func:`get_clock`; tests replace it with
-:func:`use_clock` (see :class:`FrozenClock`). There is deliberately **no public
-clock-override endpoint**: any review/development clock switching stays
-server-side, non-API and non-user-controlled.
+Clock interface / injection
+---------------------------
+``Clock`` is the small interface the services depend on: ``now()`` returns the
+current timezone-aware instant (UTC) and ``today()`` the IST business date.
+Services take an explicit ``clock`` argument (dependency injection) and fall back
+to :func:`get_clock`. :func:`use_clock` installs a *context-local* override for
+tests using a :class:`contextvars.ContextVar` -- there is **no process-global
+mutation** and no clock HTTP header or endpoint.
+
+Audit timestamps (``created_at``, ``recorded_at``, ``finalised_at``, ``paid_at``)
+use real aware instants from ``django.utils.timezone.now()``; the business clock
+is consulted only for business *dates*.
 
 Weekly policy
 -------------
@@ -56,13 +61,13 @@ UNRESOLVED TIMING POLICY (product decision; intentionally not fixed in M1)
 4. Are all externally supplied dates guaranteed to be IST business dates?
 5. How far in the past/future may a back-dated delivery or correction be?
 
-``tests/integration/test_payouts.py`` (marked ``m2``) pins the behaviour once
-these are decided; those tests fail until the M2 engine exists rather than being
-skipped.
+``tests/integration/test_payouts.py`` (marked ``m2``) pins the implemented
+behaviour of these decisions.
 """
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -118,24 +123,35 @@ class FrozenClock:
         return business_date(self._instant)
 
 
-_active_clock: Clock = SystemClock()
+_DEFAULT_CLOCK: Clock = SystemClock()
+_clock_override: ContextVar[Clock | None] = ContextVar(
+    "procurement_clock_override", default=None
+)
 
 
 def get_clock() -> Clock:
-    """Return the active business clock (M2 reads time through this)."""
-    return _active_clock
+    """Return the clock in effect for the current context.
+
+    Returns the stable default :class:`SystemClock` unless the current context
+    has installed an override with :func:`use_clock`. The default is never
+    reassigned, so there is no process-global clock mutation.
+    """
+    return _clock_override.get() or _DEFAULT_CLOCK
 
 
 @contextmanager
 def use_clock(clock: Clock) -> Iterator[None]:
-    """Temporarily swap the active clock. For tests only; not exposed via any API."""
-    global _active_clock
-    previous = _active_clock
-    _active_clock = clock
+    """Install ``clock`` for the current context only; always restored.
+
+    Backed by a :class:`contextvars.ContextVar`, so the override is context-local
+    (safe under threads and async tasks) rather than a process global. This is a
+    scoped test aid, not an HTTP-header or endpoint-driven switch.
+    """
+    token = _clock_override.set(clock)
     try:
         yield
     finally:
-        _active_clock = previous
+        _clock_override.reset(token)
 
 
 def week_start(value: date) -> date:
@@ -152,3 +168,15 @@ def week_bounds(value: date) -> tuple[date, date]:
     """Return the inclusive ``(Monday, Sunday)`` bounds of ``value``'s week."""
     start = week_start(value)
     return start, start + timedelta(days=6)
+
+
+def business_week_bounds(
+    instant: datetime, tz: ZoneInfo = BUSINESS_TIMEZONE
+) -> tuple[date, date]:
+    """Return the Monday..Sunday bounds of the business week containing ``instant``.
+
+    Combines :func:`business_date` (UTC instant -> IST date) with
+    :func:`week_bounds`, so a Sunday-evening UTC instant maps to the following
+    Monday-based week.
+    """
+    return week_bounds(business_date(instant, tz))

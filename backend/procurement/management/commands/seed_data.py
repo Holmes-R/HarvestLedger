@@ -21,17 +21,16 @@ Guarantees
   the rows as *existing*.
 * **Non-destructive** -- existing rows are never updated, cleared or reset, so
   historical prices, frozen snapshots and (future) balances are preserved.
-* **Synthetic** -- names are invented and phones are clearly non-contact
-  placeholders; there is no real farmer or banking data (``bank_reference`` is
-  left blank).
+* **Synthetic** -- names and example mobile numbers are invented; there is no
+  verified farmer or banking data (``bank_reference`` is left blank).
 
 Natural keys used for idempotency
 ---------------------------------
 * ``Crop``            -> ``name``
 * ``CropGrade``       -> ``(crop, code)``
 * ``PriceListEntry``  -> ``(crop_grade, effective_from)``
-* ``Farmer``          -> ``phone`` (a reserved ``00000000NN`` demo placeholder;
-  treated as the farmer's stable demo identifier)
+* ``Farmer``          -> ``phone`` (a stable example number used as the demo
+  identifier)
 
 Advance deduplication warning (for M2)
 --------------------------------------
@@ -119,13 +118,13 @@ DEMO_PRICES: tuple[PriceSpec, ...] = (
 )
 
 
-# Fictional farmers. Phones are reserved placeholders (leading zeros -> not a
-# dialable Indian mobile) used as the stable demo identifier. bank_reference is
+# Fictional farmers with format-valid example mobile numbers used as stable
+# demo identifiers. They are not verified contact numbers. bank_reference is
 # intentionally empty: no real banking information.
 DEMO_FARMERS: tuple[FarmerSpec, ...] = (
-    FarmerSpec("FARMER-1", "Aarti Bhosale", "0000000001", "Kolar"),
-    FarmerSpec("FARMER-2", "Ganesh Pillai", "0000000002", "Mandya"),
-    FarmerSpec("FARMER-3", "Meera Nair", "0000000003", "Mandya"),
+    FarmerSpec("FARMER-1", "Aarti Bhosale", "9000000001", "Kolar"),
+    FarmerSpec("FARMER-2", "Ganesh Pillai", "9000000002", "Mandya"),
+    FarmerSpec("FARMER-3", "Meera Nair", "9000000003", "Mandya"),
 )
 
 

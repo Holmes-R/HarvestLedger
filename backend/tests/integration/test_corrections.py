@@ -40,7 +40,7 @@ NEXT_WEEK_START = date(2026, 1, 12)
 
 @pytest.fixture
 def farmer(db):
-    return Farmer.objects.create(name="Asha", phone="0000000001", village="Kolar")
+    return Farmer.objects.create(name="Asha", phone="9000000001", village="Kolar")
 
 
 @pytest.fixture
@@ -298,3 +298,19 @@ def test_correction_is_included_once_and_original_snapshot_is_unchanged(farmer, 
     original.refresh_from_db()
     assert {field: getattr(original, field) for field in frozen} == frozen
     assert original.payout_id == original_payout.pk
+
+
+@pytest.mark.m2
+def test_correction_accepts_an_injected_business_clock(farmer, grade):
+    from procurement.services import corrections
+
+    original, _ = _finalised_original(farmer, grade)
+    note = corrections.record_correction(
+        original_delivery=original,
+        kind=DeliveryKind.CREDIT_NOTE,
+        magnitude=Decimal("10.00"),
+        reason="weight re-check",
+        clock=_frozen(date(2026, 3, 4)),
+    )
+
+    assert note.accounting_date == date(2026, 3, 4)

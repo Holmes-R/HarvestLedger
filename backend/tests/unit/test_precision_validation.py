@@ -131,6 +131,7 @@ def test_non_finite_values_are_rejected():
         _field(Delivery, "gross_weight_kg").clean(Decimal("NaN"), None)
 
 
+@pytest.mark.django_db
 def test_full_clean_rejects_excess_precision_on_a_model():
     farmer = Farmer(name="Asha", phone="9000000000", village="Kolar")
     farmer.outstanding_advance = Decimal("1.234")

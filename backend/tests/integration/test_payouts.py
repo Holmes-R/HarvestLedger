@@ -47,7 +47,7 @@ WEEK_2_START = date(2026, 1, 12)
 
 @pytest.fixture
 def farmer(db):
-    return Farmer.objects.create(name="Asha", phone="0000000001", village="Kolar")
+    return Farmer.objects.create(name="Asha", phone="9000000001", village="Kolar")
 
 
 @pytest.fixture
@@ -130,7 +130,7 @@ def test_monday_to_sunday_selection(farmer, grade):
     before = _record_delivery(farmer, grade, date(2026, 1, 4))
     after = _record_delivery(farmer, grade, WEEK_2_START)
     other_farmer = Farmer.objects.create(
-        name="Bina", phone="0000000002", village="Kolar"
+        name="Bina", phone="9000000002", village="Kolar"
     )
     someone_else = _record_delivery(other_farmer, grade, WEEK_1_START)
 

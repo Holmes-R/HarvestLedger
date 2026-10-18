@@ -9,6 +9,7 @@ Numeric precision follows :mod:`procurement.precision`: gross kg 3 dp, moisture
 
 from typing import ClassVar
 
+from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import F, Q
 
@@ -27,10 +28,20 @@ class PayoutStatus(models.TextChoices):
 
 GRADE_NOTE_KINDS = [DeliveryKind.CREDIT_NOTE, DeliveryKind.DEBIT_NOTE]
 
+INDIAN_MOBILE_PATTERN = r"\A(?:\+91 ?)?[6-9][0-9]{4} ?[0-9]{5}\Z"
+INDIAN_MOBILE_DB_PATTERN = r"^(?:\+91 ?)?[6-9][0-9]{4} ?[0-9]{5}$"
+indian_mobile_validator = RegexValidator(
+    regex=INDIAN_MOBILE_PATTERN,
+    message=(
+        "Enter a 10-digit Indian mobile number starting with 6, 7, 8, or 9; "
+        "an optional +91 prefix and spaces after the prefix or fifth digit are allowed."
+    ),
+)
+
 
 class Farmer(models.Model):
     name = models.CharField(max_length=150)
-    phone = models.CharField(max_length=20)
+    phone = models.CharField(max_length=16, validators=[indian_mobile_validator])
     village = models.CharField(max_length=120)
     bank_reference = models.CharField(max_length=255, blank=True, default="")
     outstanding_advance = models.DecimalField(
@@ -40,6 +51,10 @@ class Farmer(models.Model):
 
     class Meta:
         constraints: ClassVar[list] = [
+            models.CheckConstraint(
+                condition=Q(phone__regex=INDIAN_MOBILE_DB_PATTERN),
+                name="farmer_phone_indian_mobile",
+            ),
             models.CheckConstraint(
                 condition=Q(outstanding_advance__gte=0),
                 name="farmer_outstanding_nonnegative",

@@ -74,7 +74,7 @@ def test_historical_snapshot_survives_a_later_backdated_price(grade):
     from procurement.services import delivery
 
     original = _price(grade, "24.50", date(2026, 1, 1))
-    farmer = Farmer.objects.create(name="Asha", phone="0000000009", village="Kolar")
+    farmer = Farmer.objects.create(name="Asha", phone="9000000009", village="Kolar")
 
     snapshot = delivery.record_delivery(
         farmer=farmer,

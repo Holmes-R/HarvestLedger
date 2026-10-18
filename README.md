@@ -123,9 +123,10 @@ python -m pytest -m m2
 
 Actual M1 status (verified on this checkout):
 
-- `python -m pytest -m "not m2"` -> **94 passed, 28 deselected**.
-- `python -m pytest -m m2` -> **28 failed** with `ModuleNotFoundError: No module
-  named 'procurement.services'` (expected: M2 not built yet).
+- `python -m pytest -m "not m2" --reuse-db` -> **119 passed, 45 deselected**
+  against the isolated local PostgreSQL test database.
+- `python -m pytest -m m2` was not rerun for this phone-format change; the M2
+  service layer is still pending.
 - `python manage.py check` -> no issues; `makemigrations --check` -> no drift.
 - `python -m pytest tests/integration/test_seed.py` -> **6 passed**.
 
@@ -152,6 +153,16 @@ Explain pagination, filters and decimal-string responses.
 Link the OpenAPI documentation.
 
 ## 8. Business rules and assumptions
+
+Farmer phone numbers must be Indian mobile numbers: 10 ASCII digits starting
+with 6, 7, 8, or 9. The optional `+91` prefix may be joined to the number or
+followed by one space; one space may also separate the fifth and sixth mobile
+digits. For example, `9876543210`, `98765 43210`, `+919876543210`, and
+`+91 98765 43210` are accepted. Other prefixes, punctuation, and leading or
+trailing whitespace are rejected by frontend validation, Django model
+validation, and the PostgreSQL check constraint. The migration converts only
+the three original named demo farmers' old placeholder numbers. Any other
+invalid stored number must be corrected before the migration can finish.
 
 At M1 the seven assignment rules are represented by the schema, constraints and
 design documents. The executable rule logic arrives with the M2 service layer,
@@ -242,9 +253,9 @@ sensitive-data exclusions and hosted log access.
 ## 10. Reviewer aids
 
 - **Seed:** `python manage.py seed_data` — deterministic and idempotent; creates
-  3 crops, 5 grades, 3 fictional farmers (phones `0000000001`–`0000000003`) and
-  10 effective-dated prices. Running it again reports the rows as *existing* and
-  changes nothing.
+  3 crops, 5 grades, 3 fictional farmers (example phones `9000000001`–
+  `9000000003`) and 10 effective-dated prices. Running it again reports the
+  rows as *existing* and changes nothing.
 - **Demo scenarios (M2):** declared in `backend/procurement/scenarios.py` —
   `multiple-weeks`, `moisture-boundaries`, `missing-rate`, `backdated-price`,
   `large-advance`, `finalised-and-corrections`. They are a specification for M2,

@@ -79,7 +79,7 @@ def test_seed_is_idempotent(seed):
 def test_seed_preserves_existing_values(seed):
     seed()
 
-    farmer = Farmer.objects.get(phone="0000000001")
+    farmer = Farmer.objects.get(phone="9000000001")
     farmer.outstanding_advance = Decimal("250.00")
     farmer.save()
 
@@ -115,7 +115,7 @@ def test_seed_preserves_existing_values(seed):
 
 def test_reseeding_preserves_frozen_delivery_and_financial_rows(seed):
     seed()
-    farmer = Farmer.objects.get(phone="0000000001")
+    farmer = Farmer.objects.get(phone="9000000001")
     entry = PriceListEntry.objects.get(
         crop_grade__crop__name="Maize",
         crop_grade__code="A",
