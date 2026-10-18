@@ -252,10 +252,15 @@ sensitive-data exclusions and hosted log access.
 
 ## 10. Reviewer aids
 
-- **Seed:** `python manage.py seed_data` — deterministic and idempotent; creates
-  3 crops, 5 grades, 3 fictional farmers (example phones `9000000001`–
-  `9000000003`) and 10 effective-dated prices. Running it again reports the
-  rows as *existing* and changes nothing.
+- **Seed:** `python manage.py seed_data` — deterministic and idempotent. Creates
+  reference data (3 crops, 5 grades, 3 fictional farmers with example phones
+  `9000000001`–`9000000003`, 10 effective-dated prices) **plus a financial demo
+  built through `procurement.services`**: advances (including two same-day
+  advances to one farmer), deliveries across several weeks covering the moisture
+  boundaries and an effective-date price change, a probed-but-not-persisted
+  missing-rate example, draft/finalised/paid payouts, a correction note and its
+  supplementary payout. Running it again reports every row as *existing*, adds
+  nothing, reapplies no recovery and leaves balances and snapshots untouched.
 - **Demo scenarios (M2):** declared in `backend/procurement/scenarios.py` —
   `multiple-weeks`, `moisture-boundaries`, `missing-rate`, `backdated-price`,
   `large-advance`, `finalised-and-corrections`. They are a specification for M2,
@@ -277,9 +282,11 @@ sensitive-data exclusions and hosted log access.
   payout generation and corrections; the DRF API; the React frontend; and the
   PostgreSQL/Docker wiring. The 28 `m2`-marked tests currently fail with
   `ModuleNotFoundError`.
-- Design restrictions chosen deliberately: financial rows are never seeded;
-  history FKs are `PROTECT` (only `CropGrade.crop` is `CASCADE`); prices are
-  append-only in admin; there is no frontend clock-override endpoint.
+- Design restrictions chosen deliberately: seeded financial rows are written
+  only through the service layer (never by direct ORM writes), so recovery,
+  immutability and effective-dated rules are enforced; history FKs are `PROTECT`
+  (only `CropGrade.crop` is `CASCADE`); prices are append-only in admin; there is
+  no frontend clock-override endpoint.
 - Unresolved product decisions listed in `clock.py` (intra-day cutoff,
   corrections against PAID weeks, multiple supplementaries, IST-input
   guarantee, back-dating limits).

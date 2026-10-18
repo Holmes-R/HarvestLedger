@@ -147,6 +147,25 @@ instants from `django.utils.timezone.now()` -- never the business clock.
     one payout (single `payout` FK); several notes may reference the same
     original. Atomic and farmer-first locked (`lock_farmer` -> `lock_payout`).
 
+### `procurement.services.ledger`
+
+- `build_farmer_ledger(farmer) -> FarmerLedger`
+  - **Read-only** snapshot taken in one `transaction.atomic()`; writes nothing.
+    Returns frozen dataclasses: `deliveries` (deliveries and correction notes,
+    ordered by `(accounting_date, kind, pk)`), `advances` (ordered
+    `(given_on, pk)` -- same-day advances are never collapsed), `payouts`
+    (ordered `(week_start, status, pk)`) with status and arithmetic,
+    `outstanding_advance` and the `AdvanceReconciliation`.
+  - `LedgerPayout.member_total` is recomputed from the ledger's delivery rows
+    (not trusted from the stored column); `gross_matches_members` and
+    `net_equals_gross_minus_deduction` expose the arithmetic checks. A delivery
+    is an earning recorded once -- `earnings_identity_holds` asserts
+    `settled_earnings + draft_projection + unassigned_earnings ==
+    total_recorded_amount`, so a delivery and its payout are never added as two
+    earnings. DRAFT projections (`draft_payouts` / `draft_projection`) are kept
+    distinct from finalised recoveries (`settled_payouts` / `settled_earnings` /
+    `total_recovered`). Requires a saved farmer (`farmer_required`).
+
 ### Helpers
 
 - `procurement.services.money`: `quantize_money`, `advance_recovery_cap`,
@@ -259,6 +278,15 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 | `...::test_correction_leaves_the_finalised_statement_unchanged` | `corrections.record_correction` (immutability) |
 | `...::test_debit_only_week_is_nonpositive_and_payable_without_recovery` | `corrections` + `payouts.finalise_payout`/`mark_payout_paid` |
 | `...::test_concurrent_correction_inclusion_assigns_the_note_once` | `corrections` + `payouts.build_weekly_payout` (farmer lock) |
+| `tests/integration/test_ledger.py::test_every_seeded_ledger_reconciles` | `ledger.build_farmer_ledger` + `advances.reconcile_outstanding` |
+| `...::test_ledger_does_not_double_count_delivery_and_payout` | `ledger` (earnings identity) |
+| `...::test_ledger_keeps_drafts_distinct_from_finalised_recoveries` | `ledger` (draft vs settled) |
+| `...::test_ledger_lists_membership_and_advances_in_deterministic_order` | `ledger` (ordering) |
+| `...::test_ledger_is_read_only` | `ledger.build_farmer_ledger` |
+| `...::test_ledger_requires_a_saved_farmer` | `ledger` (`farmer_required`) |
+| `tests/integration/test_seed.py::test_two_consecutive_seed_runs_create_nothing_and_change_nothing` | seed through services (idempotent) |
+| `...::test_seed_creates_expected_financial_history` | seed through services |
+| `...::test_seed_outstanding_after_recovery` | seed through services + `payouts.finalise_payout` |
 
 `tests/unit/test_clock.py` covers the clock/date helpers directly
 (`business_date`, `week_*`, `business_week_bounds`, context-local `use_clock`),

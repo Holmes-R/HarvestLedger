@@ -1,8 +1,10 @@
 """``seed_data`` management command behaviour.
 
-All tests here are M1 and must pass: they assert the seed command is
-deterministic, idempotent, non-destructive and atomic, and that it creates
-reference data only (never financial rows).
+These tests assert the seed command is deterministic, idempotent,
+non-destructive and atomic. It now seeds **reference data plus a
+service-built financial demo** (advances, deliveries, payouts, a correction and a
+supplementary payout); the reference counts are unchanged, and a second run adds
+nothing, reapplies no recovery and leaves balances and snapshots untouched.
 """
 
 from datetime import date
@@ -53,18 +55,28 @@ def test_seed_populates_expected_reference_data(seed):
     assert _counts() == EXPECTED
 
 
-def test_seed_creates_no_financial_records(seed):
+def test_seed_creates_expected_financial_history(seed):
     seed()
-    assert Advance.objects.count() == 0
-    assert Delivery.objects.count() == 0
-    assert Payout.objects.count() == 0
+    assert Advance.objects.count() == 3
+    assert Delivery.objects.filter(kind="PROCUREMENT").count() == 9
+    assert Delivery.objects.exclude(kind="PROCUREMENT").count() == 1  # correction note
+    assert Payout.objects.count() == 7
+    assert Payout.objects.filter(status="DRAFT").count() == 2
+    assert Payout.objects.filter(status="FINALISED").count() == 3
+    assert Payout.objects.filter(status="PAID").count() == 2
 
 
-def test_seed_farmers_have_zero_outstanding(seed):
+def test_seed_does_not_persist_the_missing_rate_delivery(seed):
     seed()
-    assert set(Farmer.objects.values_list("outstanding_advance", flat=True)) == {
-        Decimal("0.00")
-    }
+    assert not Delivery.objects.filter(farmer__phone="9000000003").exists()
+
+
+def test_seed_outstanding_after_recovery(seed):
+    seed()
+    balances = dict(Farmer.objects.values_list("phone", "outstanding_advance"))
+    assert balances["9000000001"] == Decimal("0.00")  # 1000 recovery applied
+    assert balances["9000000002"] == Decimal("52480.00")  # 55000 - 2x1260 carried
+    assert balances["9000000003"] == Decimal("0.00")
 
 
 def test_seed_is_idempotent(seed):
@@ -113,38 +125,39 @@ def test_seed_preserves_existing_values(seed):
     assert _counts() == EXPECTED
 
 
-def test_reseeding_preserves_frozen_delivery_and_financial_rows(seed):
+def _financial_snapshot():
+    return {
+        "advances": list(
+            Advance.objects.order_by("pk").values_list(
+                "farmer__phone", "amount", "given_on"
+            )
+        ),
+        "deliveries": list(
+            Delivery.objects.order_by("pk").values_list(
+                "farmer__phone", "kind", "accounting_date", "amount", "payout_id"
+            )
+        ),
+        "payouts": list(
+            Payout.objects.order_by("pk").values_list(
+                "farmer__phone",
+                "week_start",
+                "status",
+                "gross_amount",
+                "advance_deduction",
+                "net_amount",
+            )
+        ),
+        "balances": list(
+            Farmer.objects.order_by("phone").values_list("phone", "outstanding_advance")
+        ),
+    }
+
+
+def test_reseeding_preserves_frozen_snapshots_and_balances(seed):
     seed()
-    farmer = Farmer.objects.get(phone="9000000001")
-    entry = PriceListEntry.objects.get(
-        crop_grade__crop__name="Maize",
-        crop_grade__code="A",
-        effective_from=date(2026, 1, 1),
-    )
-    payout = Payout.objects.create(
-        farmer=farmer,
-        week_start=date(2026, 1, 5),
-        week_end=date(2026, 1, 11),
-        gross_amount=Decimal("2450.00"),
-        net_amount=Decimal("2450.00"),
-    )
-    delivery = Delivery.objects.create(
-        farmer=farmer,
-        crop_grade=entry.crop_grade,
-        delivered_on=date(2026, 1, 6),
-        accounting_date=date(2026, 1, 6),
-        gross_weight_kg=Decimal("100.000"),
-        moisture_percent=Decimal("14.00"),
-        threshold_used=Decimal("14.00"),
-        deduction_percent=Decimal("0.00"),
-        deduction_kg=Decimal("0.00000"),
-        net_kg=Decimal("100.00000"),
-        applied_price=entry.price_per_kg,
-        price_list_entry=entry,
-        amount=Decimal("2450.00"),
-        payout=payout,
-    )
-    frozen = {
+    delivery = Delivery.objects.filter(kind="PROCUREMENT").order_by("pk").first()
+    payout = Payout.objects.filter(status="PAID").order_by("pk").first()
+    frozen_delivery = {
         field: getattr(delivery, field)
         for field in (
             "farmer_id",
@@ -161,26 +174,42 @@ def test_reseeding_preserves_frozen_delivery_and_financial_rows(seed):
             "calculation_version",
         )
     }
+    frozen_payout = (
+        payout.status,
+        payout.gross_amount,
+        payout.advance_deduction,
+        payout.net_amount,
+        payout.finalised_at,
+        payout.paid_at,
+    )
 
     seed()
 
     delivery.refresh_from_db()
     payout.refresh_from_db()
-    assert {field: getattr(delivery, field) for field in frozen} == frozen
-    assert (payout.gross_amount, payout.net_amount) == (
-        Decimal("2450.00"),
-        Decimal("2450.00"),
-    )
+    assert {field: getattr(delivery, field) for field in frozen_delivery} == frozen_delivery
     assert (
-        Advance.objects.count(),
-        Delivery.objects.count(),
-        Payout.objects.count(),
-    ) == (
-        0,
-        1,
-        1,
-    )
+        payout.status,
+        payout.gross_amount,
+        payout.advance_deduction,
+        payout.net_amount,
+        payout.finalised_at,
+        payout.paid_at,
+    ) == frozen_payout
     assert _counts() == EXPECTED
+
+
+def test_two_consecutive_seed_runs_create_nothing_and_change_nothing(seed):
+    seed()
+    counts = _counts()
+    snapshot = _financial_snapshot()
+
+    output = seed()
+
+    assert counts == EXPECTED
+    assert _counts() == counts
+    assert _financial_snapshot() == snapshot
+    assert "0 created" in output
 
 
 def test_seed_rolls_back_entirely_on_failure(seed, monkeypatch):
