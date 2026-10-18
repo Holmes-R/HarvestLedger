@@ -218,6 +218,13 @@ rejected by a domain rule (`price_not_found`, `grade_not_allowed`,
 (`internal_error`) with a correlation reference and never expose a traceback or
 credential.
 
+**Write contract.** Writes are strict. Sending a server-computed field (for
+example `amount`, `net_kg`, `applied_price`, `outstanding_advance`, or a
+payout total) returns `400` with code `protected_field`; any field the endpoint
+does not accept returns `400` with code `unsupported_field`. Such fields are
+refused, never silently ignored by `read_only`. Input uses ISO-8601 dates
+(`YYYY-MM-DD`); decimals must not exceed the model column's scale.
+
 ## 8. Business rules and assumptions
 
 Farmer phone numbers must be Indian mobile numbers: 10 ASCII digits starting

@@ -11,6 +11,7 @@ absent, raise the domain not-found error (404) instead of DRF's generic
 """
 
 from rest_framework import serializers
+from rest_framework.exceptions import ErrorDetail
 
 from procurement.api.errors import EmptyWeek
 from procurement.models import (
@@ -62,6 +63,56 @@ def _contains_code(exc, wanted):
             yield value
 
     return wanted in set(flatten(exc.get_codes()))
+
+
+class ProtectedFieldMixin:
+    """Reject writes to server-computed fields and to unsupported fields.
+
+    The write contract is explicit: a client must not set a computed field
+    (``amount``, ``net_kg``, ``outstanding_advance``, ...) or any field the
+    endpoint does not accept. Such attempts return ``400`` with code
+    ``protected_field`` / ``unsupported_field`` -- they are refused, never
+    silently dropped by ``read_only``.
+    """
+
+    #: Field names computed by the server that a write must not supply.
+    protected_fields = ()
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        data = self.initial_data
+        if hasattr(data, "keys"):
+            writable = {
+                name
+                for name, field in self.fields.items()
+                if not field.read_only
+            }
+            for key in data:
+                if key in self.protected_fields:
+                    raise serializers.ValidationError(
+                        {
+                            key: [
+                                ErrorDetail(
+                                    f"{key} is computed by the server and cannot "
+                                    "be set.",
+                                    code="protected_field",
+                                )
+                            ]
+                        }
+                    )
+                if key not in writable:
+                    raise serializers.ValidationError(
+                        {
+                            key: [
+                                ErrorDetail(
+                                    f"{key} is not a supported field for this "
+                                    "endpoint.",
+                                    code="unsupported_field",
+                                )
+                            ]
+                        }
+                    )
+        return attrs
 
 
 class ReferenceField(serializers.PrimaryKeyRelatedField):
@@ -120,13 +171,14 @@ class CropGradeSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class FarmerSerializer(serializers.ModelSerializer):
+class FarmerSerializer(ProtectedFieldMixin, serializers.ModelSerializer):
     outstanding_advance = model_decimal(
         Farmer, "outstanding_advance", read_only=True
     )
     bank_reference = serializers.CharField(
         required=False, allow_blank=True, default=""
     )
+    protected_fields = ("id", "outstanding_advance", "created_at")
 
     class Meta:
         model = Farmer
@@ -199,11 +251,18 @@ class GradeOrCodeField(serializers.Field):
         return getattr(value, "code", value)
 
 
-class PriceEntryCreateSerializer(serializers.Serializer):
+class PriceEntryCreateSerializer(ProtectedFieldMixin, serializers.Serializer):
     crop = CropReferenceField(queryset=Crop.objects.all())
     grade = GradeOrCodeField()
     price_per_kg = model_decimal(PriceListEntry, "price_per_kg")
     effective_from = serializers.DateField()
+    protected_fields = (
+        "id",
+        "crop_grade",
+        "crop_grade_code",
+        "crop_name",
+        "created_at",
+    )
 
     def create(self, validated_data):
         return create_price_entry(
@@ -286,7 +345,30 @@ class DeliveryPreviewSerializer(serializers.Serializer):
     amount = serializers.DecimalField(read_only=True, **_MONEY)
 
 
-class DeliveryWriteSerializer(serializers.Serializer):
+# Server-computed delivery fields a write must never supply. ``crop_grade``,
+# ``delivered_on``, ``gross_weight_kg`` and ``moisture_percent`` are the only
+# writable inputs; everything else is derived from the stored snapshot.
+_DELIVERY_PROTECTED = (
+    "id",
+    "kind",
+    "accounting_date",
+    "threshold_used",
+    "deduction_percent",
+    "deduction_kg",
+    "net_kg",
+    "applied_price",
+    "price_list_entry",
+    "amount",
+    "calculation_version",
+    "original_delivery",
+    "correction_magnitude",
+    "reason",
+    "payout",
+    "recorded_at",
+)
+
+
+class DeliveryWriteSerializer(ProtectedFieldMixin, serializers.Serializer):
     """Validates a delivery request and calls the recording service."""
 
     farmer = FarmerReferenceField(queryset=Farmer.objects.all())
@@ -294,12 +376,13 @@ class DeliveryWriteSerializer(serializers.Serializer):
     delivered_on = serializers.DateField()
     gross_weight_kg = model_decimal(Delivery, "gross_weight_kg")
     moisture_percent = model_decimal(Delivery, "moisture_percent")
+    protected_fields = _DELIVERY_PROTECTED
 
     def create(self, validated_data):
         return record_delivery(**validated_data)
 
 
-class DeliveryEditSerializer(serializers.Serializer):
+class DeliveryEditSerializer(ProtectedFieldMixin, serializers.Serializer):
     """Validates a partial delivery edit and calls the edit service."""
 
     delivered_on = serializers.DateField(required=False)
@@ -312,6 +395,7 @@ class DeliveryEditSerializer(serializers.Serializer):
     moisture_percent = model_decimal(
         Delivery, "moisture_percent", required=False
     )
+    protected_fields = _DELIVERY_PROTECTED
 
     def update(self, instance, validated_data):
         return edit_delivery(instance, **validated_data)
@@ -416,10 +500,11 @@ class AdvanceSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class AdvanceCreateSerializer(serializers.Serializer):
+class AdvanceCreateSerializer(ProtectedFieldMixin, serializers.Serializer):
     farmer = FarmerReferenceField(queryset=Farmer.objects.all())
     amount = model_decimal(Advance, "amount")
     given_on = serializers.DateField()
+    protected_fields = ("id", "created_at")
 
     def create(self, validated_data):
         return post_advance(
@@ -467,11 +552,20 @@ class CorrectionReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class CorrectionCreateSerializer(serializers.Serializer):
+class CorrectionCreateSerializer(ProtectedFieldMixin, serializers.Serializer):
     original_delivery = serializers.IntegerField()
     kind = serializers.ChoiceField(choices=GRADE_NOTE_KINDS)
     magnitude = model_decimal(Delivery, "correction_magnitude")
     reason = serializers.CharField()
+    protected_fields = (
+        "id",
+        "farmer",
+        "correction_magnitude",
+        "accounting_date",
+        "amount",
+        "payout",
+        "recorded_at",
+    )
 
     def create(self, validated_data):
         return record_correction(
@@ -508,9 +602,20 @@ class PayoutSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class PayoutGenerateSerializer(serializers.Serializer):
+class PayoutGenerateSerializer(ProtectedFieldMixin, serializers.Serializer):
     farmer = FarmerReferenceField(queryset=Farmer.objects.all())
     week_start = serializers.DateField()
+    protected_fields = (
+        "id",
+        "week_end",
+        "status",
+        "gross_amount",
+        "advance_deduction",
+        "net_amount",
+        "created_at",
+        "finalised_at",
+        "paid_at",
+    )
 
     def create(self, validated_data):
         payout = build_weekly_payout(

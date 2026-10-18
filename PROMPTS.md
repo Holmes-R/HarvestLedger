@@ -92,3 +92,37 @@ Produced (all under `backend/`):
   `test_payouts.py`, `test_schema.py` (marker `m3`).
 - `pytest.ini` — `m3` marker; README §7 rewritten with the endpoint table,
   pagination/filters, decimal-string responses and error contract.
+
+---
+
+## Entry 4 — M3 foundation and strict write contract
+
+> Configure the M3 API foundation using the existing project structure. Add DRF,
+> django-cors-headers, and drf-spectacular only if absent. Record dependencies
+> in the project's existing dependency files. Configure versioned routes under
+> /api/v1/, JSON responses, explicit permission/authentication defaults, decimal
+> values serialized as strings, environment-configured allowed frontend origins,
+> appropriate middleware ordering, OpenAPI integration. Keep Django admin
+> working. Create request/response serializer conventions: explicit writable
+> fields, separate input/output representations, ISO dates, decimal precision
+> matching models/services, clear handling of missing/null/blank/unsupported
+> fields. Explicitly reject attempts to write protected calculated fields; do
+> not rely on read_only silently ignoring them if rejection is the chosen API
+> contract. Never configure wildcard CORS as a substitute for permissions. Add
+> foundation and serializer tests.
+
+Produced:
+
+- Confirmed `djangorestframework`, `django-cors-headers` and `drf-spectacular`
+  already present in `backend/requirements.txt` (UTF-16) — no changes needed.
+- `procurement/api/serializers.py` — `ProtectedFieldMixin` rejecting writes to
+  computed fields (`protected_field`) and unknown fields (`unsupported_field`)
+  with `400`; applied to every write serializer with explicit `protected_fields`.
+- `tests/api/test_foundation.py` — versioned routes, anonymous-access policy,
+  JSON renderer + decimal strings, CORS middleware order and env origins
+  (allowed vs disallowed, no wildcard), health JSON, admin login, OpenAPI paths.
+- `tests/api/test_serializer_conventions.py` — protected/unsupported rejection,
+  missing/null/blank handling, ISO date rejection, precision, input/output
+  separation and decimal-string output.
+- README §7 — documented the strict write contract; `COVERAGE.md` refreshed
+  (396 passed).
