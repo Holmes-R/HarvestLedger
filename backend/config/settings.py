@@ -37,17 +37,21 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'corsheaders',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework',
+    'drf_spectacular',
     'procurement',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -142,3 +146,48 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Django REST Framework (M3 API)
+# All business rules live in ``procurement.services``; the API is a thin HTTP
+# adapter. Decimal fields are always rendered as strings (never floats).
+REST_FRAMEWORK = {
+    # No authentication system exists for the API (fictional-demo policy); admin
+    # keeps Django session auth. See README section 9.
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+    ]
+    + (["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
+    "DEFAULT_PAGINATION_CLASS": "procurement.api.pagination.StandardPagination",
+    "PAGE_SIZE": 50,
+    "COERCE_DECIMAL_TO_STRING": True,
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "EXCEPTION_HANDLER": "procurement.api.errors.api_exception_handler",
+    "TEST_REQUEST_DEFAULT_FORMAT": "json",
+}
+
+# OpenAPI schema + Swagger UI (M3).
+SPECTACULAR_SETTINGS = {
+    "TITLE": "HarvestLedger API",
+    "DESCRIPTION": (
+        "Produce procurement and payout API. Records deliveries, applies "
+        "effective-dated prices and moisture deductions, posts advances, and "
+        "generates weekly payouts with advance recovery. Money is returned as "
+        "decimal strings."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+}
+
+# CORS: allow the local Vite dev origin only by default; override with the
+# comma-separated CORS_ALLOWED_ORIGINS environment variable when needed.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:5173"
+    ).split(",")
+    if origin.strip()
+]

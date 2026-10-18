@@ -1,0 +1,521 @@
+"""API serializers.
+
+Serializers only validate **request shape** (types, required fields, decimal
+precision and field capacity) and render responses. Domain rules stay in
+:mod:`procurement.services`. Every decimal is rendered as a string at the model
+field's documented scale (``COERCE_DECIMAL_TO_STRING``).
+
+Reference fields resolve a primary key to a stored object and, when it is
+absent, raise the domain not-found error (404) instead of DRF's generic
+``does_not_exist`` (400) -- a request-level lookup, not a business rule.
+"""
+
+from rest_framework import serializers
+
+from procurement.api.errors import EmptyWeek
+from procurement.models import (
+    GRADE_NOTE_KINDS,
+    Advance,
+    Crop,
+    CropGrade,
+    Delivery,
+    Farmer,
+    Payout,
+    PriceListEntry,
+)
+from procurement.services.advances import post_advance
+from procurement.services.corrections import record_correction
+from procurement.services.delivery import edit_delivery, record_delivery
+from procurement.services.errors import (
+    CropGradeNotFound,
+    CropNotFound,
+    FarmerNotFound,
+)
+from procurement.services.payouts import build_weekly_payout
+from procurement.services.pricing import create_price_entry
+
+
+def model_decimal(model, field_name, **kwargs):
+    """A ``DecimalField`` bound to ``model``'s field metadata.
+
+    Reads ``max_digits``/``decimal_places`` from the model so request validation
+    rejects over-precise or over-capacity input before it reaches a service, and
+    responses use the same scale. Rendered as a string.
+    """
+    field = model._meta.get_field(field_name)
+    kwargs.setdefault("max_digits", field.max_digits)
+    kwargs.setdefault("decimal_places", field.decimal_places)
+    kwargs.setdefault("coerce_to_string", True)
+    return serializers.DecimalField(**kwargs)
+
+
+def _contains_code(exc, wanted):
+    """Whether a DRF ``ValidationError`` carries ``wanted`` among its codes."""
+
+    def flatten(value):
+        if isinstance(value, dict):
+            value = list(value.values())
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                yield from flatten(item)
+        else:
+            yield value
+
+    return wanted in set(flatten(exc.get_codes()))
+
+
+class ReferenceField(serializers.PrimaryKeyRelatedField):
+    """Primary-key reference that reports an absent row as a domain 404."""
+
+    not_found_error = None
+    not_found_label = "object"
+
+    def to_internal_value(self, data):
+        try:
+            return super().to_internal_value(data)
+        except serializers.ValidationError as exc:
+            if self.not_found_error is not None and _contains_code(
+                exc, "does_not_exist"
+            ):
+                raise self.not_found_error(
+                    f"{self.not_found_label} {data} was not found."
+                ) from exc
+            raise
+
+
+class FarmerReferenceField(ReferenceField):
+    not_found_error = FarmerNotFound
+    not_found_label = "Farmer"
+
+
+class CropReferenceField(ReferenceField):
+    not_found_error = CropNotFound
+    not_found_label = "Crop"
+
+
+class CropGradeReferenceField(ReferenceField):
+    not_found_error = CropGradeNotFound
+    not_found_label = "Crop grade"
+
+
+# --- Reference data ---------------------------------------------------------
+
+
+class CropSerializer(serializers.ModelSerializer):
+    moisture_threshold = model_decimal(Crop, "moisture_threshold", read_only=True)
+    max_moisture = model_decimal(Crop, "max_moisture", read_only=True)
+
+    class Meta:
+        model = Crop
+        fields = ("id", "name", "moisture_threshold", "max_moisture", "created_at")
+        read_only_fields = fields
+
+
+class CropGradeSerializer(serializers.ModelSerializer):
+    crop_name = serializers.CharField(source="crop.name", read_only=True)
+
+    class Meta:
+        model = CropGrade
+        fields = ("id", "crop", "crop_name", "code", "created_at")
+        read_only_fields = fields
+
+
+class FarmerSerializer(serializers.ModelSerializer):
+    outstanding_advance = model_decimal(
+        Farmer, "outstanding_advance", read_only=True
+    )
+    bank_reference = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
+
+    class Meta:
+        model = Farmer
+        fields = (
+            "id",
+            "name",
+            "phone",
+            "village",
+            "bank_reference",
+            "outstanding_advance",
+            "created_at",
+        )
+        read_only_fields = ("id", "outstanding_advance", "created_at")
+
+    def create(self, validated_data):
+        # Reference data: no calculation, but run full model validation
+        # (Indian-mobile validator + check constraints) before saving.
+        farmer = Farmer(**validated_data)
+        farmer.full_clean()
+        farmer.save()
+        return farmer
+
+
+class PriceListEntrySerializer(serializers.ModelSerializer):
+    crop_grade_code = serializers.CharField(source="crop_grade.code", read_only=True)
+    crop = serializers.IntegerField(source="crop_grade.crop_id", read_only=True)
+    crop_name = serializers.CharField(source="crop_grade.crop.name", read_only=True)
+    price_per_kg = model_decimal(PriceListEntry, "price_per_kg", read_only=True)
+
+    class Meta:
+        model = PriceListEntry
+        fields = (
+            "id",
+            "crop_grade",
+            "crop_grade_code",
+            "crop",
+            "crop_name",
+            "price_per_kg",
+            "effective_from",
+            "created_at",
+        )
+        read_only_fields = fields
+
+
+class GradeOrCodeField(serializers.Field):
+    """Accept a crop-grade primary key or a grade code.
+
+    A numeric value is treated as a primary key (absent -> ``CropGradeNotFound``,
+    404); a non-numeric string is treated as a grade code and passed through for
+    the service to validate against the crop (``GradeNotAllowed``, 422).
+    """
+
+    def to_internal_value(self, data):
+        if isinstance(data, bool) or data is None:
+            raise serializers.ValidationError(
+                "grade must be a grade id or code.", code="invalid"
+            )
+        if isinstance(data, int) or (isinstance(data, str) and data.strip().isdigit()):
+            grade = CropGrade.objects.filter(pk=int(data)).first()
+            if grade is None:
+                raise CropGradeNotFound(f"Crop grade {data} was not found.")
+            return grade
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        raise serializers.ValidationError(
+            "grade must be a grade id or code.", code="invalid"
+        )
+
+    def to_representation(self, value):
+        return getattr(value, "code", value)
+
+
+class PriceEntryCreateSerializer(serializers.Serializer):
+    crop = CropReferenceField(queryset=Crop.objects.all())
+    grade = GradeOrCodeField()
+    price_per_kg = model_decimal(PriceListEntry, "price_per_kg")
+    effective_from = serializers.DateField()
+
+    def create(self, validated_data):
+        return create_price_entry(
+            crop=validated_data["crop"],
+            grade=validated_data["grade"],
+            price_per_kg=validated_data["price_per_kg"],
+            effective_from=validated_data["effective_from"],
+        )
+
+
+# Read-only decimal field specs (scale must match the source columns).
+_MONEY = {"max_digits": 14, "decimal_places": 2, "coerce_to_string": True}
+_GROSS = {"max_digits": 12, "decimal_places": 3, "coerce_to_string": True}
+_DERIVED = {"max_digits": 15, "decimal_places": 5, "coerce_to_string": True}
+_RATE = {"max_digits": 12, "decimal_places": 2, "coerce_to_string": True}
+_MOISTURE = {"max_digits": 5, "decimal_places": 2, "coerce_to_string": True}
+
+
+# --- Deliveries -------------------------------------------------------------
+
+
+class DeliveryReadSerializer(serializers.ModelSerializer):
+    gross_weight_kg = model_decimal(Delivery, "gross_weight_kg", read_only=True)
+    moisture_percent = model_decimal(Delivery, "moisture_percent", read_only=True)
+    threshold_used = model_decimal(Delivery, "threshold_used", read_only=True)
+    deduction_percent = model_decimal(Delivery, "deduction_percent", read_only=True)
+    deduction_kg = model_decimal(Delivery, "deduction_kg", read_only=True)
+    net_kg = model_decimal(Delivery, "net_kg", read_only=True)
+    applied_price = model_decimal(Delivery, "applied_price", read_only=True)
+    amount = model_decimal(Delivery, "amount", read_only=True)
+    correction_magnitude = model_decimal(
+        Delivery, "correction_magnitude", read_only=True
+    )
+
+    class Meta:
+        model = Delivery
+        fields = (
+            "id",
+            "farmer",
+            "kind",
+            "crop_grade",
+            "delivered_on",
+            "accounting_date",
+            "gross_weight_kg",
+            "moisture_percent",
+            "threshold_used",
+            "deduction_percent",
+            "deduction_kg",
+            "net_kg",
+            "applied_price",
+            "price_list_entry",
+            "amount",
+            "calculation_version",
+            "original_delivery",
+            "correction_magnitude",
+            "reason",
+            "payout",
+            "recorded_at",
+        )
+        read_only_fields = fields
+
+
+class DeliveryPreviewSerializer(serializers.Serializer):
+    """Renders the non-persisted ``DeliveryPreview`` result."""
+
+    farmer_id = serializers.IntegerField(read_only=True)
+    crop_grade = serializers.IntegerField(source="crop_grade.pk", read_only=True)
+    delivered_on = serializers.DateField(read_only=True)
+    accounting_date = serializers.DateField(read_only=True)
+    gross_weight_kg = serializers.DecimalField(read_only=True, **_GROSS)
+    moisture_percent = serializers.DecimalField(read_only=True, **_MOISTURE)
+    threshold_used = serializers.DecimalField(read_only=True, **_MOISTURE)
+    applied_price = serializers.DecimalField(read_only=True, **_RATE)
+    price_list_entry = serializers.IntegerField(
+        source="price_list_entry.pk", read_only=True
+    )
+    deduction_percent = serializers.DecimalField(read_only=True, **_MOISTURE)
+    deduction_kg = serializers.DecimalField(read_only=True, **_DERIVED)
+    net_kg = serializers.DecimalField(read_only=True, **_DERIVED)
+    amount = serializers.DecimalField(read_only=True, **_MONEY)
+
+
+class DeliveryWriteSerializer(serializers.Serializer):
+    """Validates a delivery request and calls the recording service."""
+
+    farmer = FarmerReferenceField(queryset=Farmer.objects.all())
+    crop_grade = CropGradeReferenceField(queryset=CropGrade.objects.all())
+    delivered_on = serializers.DateField()
+    gross_weight_kg = model_decimal(Delivery, "gross_weight_kg")
+    moisture_percent = model_decimal(Delivery, "moisture_percent")
+
+    def create(self, validated_data):
+        return record_delivery(**validated_data)
+
+
+class DeliveryEditSerializer(serializers.Serializer):
+    """Validates a partial delivery edit and calls the edit service."""
+
+    delivered_on = serializers.DateField(required=False)
+    crop_grade = CropGradeReferenceField(
+        queryset=CropGrade.objects.all(), required=False
+    )
+    gross_weight_kg = model_decimal(
+        Delivery, "gross_weight_kg", required=False
+    )
+    moisture_percent = model_decimal(
+        Delivery, "moisture_percent", required=False
+    )
+
+    def update(self, instance, validated_data):
+        return edit_delivery(instance, **validated_data)
+
+
+# --- Ledger (read-only projection of FarmerLedger) --------------------------
+
+
+class LedgerDeliverySerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    kind = serializers.CharField(read_only=True)
+    crop_grade = serializers.IntegerField(read_only=True)
+    delivered_on = serializers.DateField(read_only=True)
+    accounting_date = serializers.DateField(read_only=True)
+    gross_weight_kg = serializers.DecimalField(
+        read_only=True, allow_null=True, **_GROSS
+    )
+    moisture_percent = serializers.DecimalField(
+        read_only=True, allow_null=True, **_MOISTURE
+    )
+    net_kg = serializers.DecimalField(read_only=True, allow_null=True, **_DERIVED)
+    applied_price = serializers.DecimalField(
+        read_only=True, allow_null=True, **_RATE
+    )
+    amount = serializers.DecimalField(read_only=True, allow_null=True, **_MONEY)
+    payout = serializers.IntegerField(read_only=True)
+    original_delivery = serializers.IntegerField(read_only=True)
+    correction_magnitude = serializers.DecimalField(
+        read_only=True, allow_null=True, **_MONEY
+    )
+    reason = serializers.CharField(read_only=True)
+    is_correction = serializers.BooleanField(read_only=True)
+    is_assigned = serializers.BooleanField(read_only=True)
+    signed_amount = serializers.DecimalField(read_only=True, **_MONEY)
+
+
+class LedgerAdvanceSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    amount = serializers.DecimalField(read_only=True, **_MONEY)
+    given_on = serializers.DateField(read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+
+
+class LedgerPayoutSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    week_start = serializers.DateField(read_only=True)
+    week_end = serializers.DateField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    gross_amount = serializers.DecimalField(read_only=True, **_MONEY)
+    advance_deduction = serializers.DecimalField(read_only=True, **_MONEY)
+    net_amount = serializers.DecimalField(read_only=True, **_MONEY)
+    finalised_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    paid_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    delivery_ids = serializers.ListField(
+        child=serializers.IntegerField(), read_only=True
+    )
+    member_total = serializers.DecimalField(read_only=True, **_MONEY)
+    is_draft = serializers.BooleanField(read_only=True)
+    is_settled = serializers.BooleanField(read_only=True)
+    gross_matches_members = serializers.BooleanField(read_only=True)
+    net_equals_gross_minus_deduction = serializers.BooleanField(read_only=True)
+
+
+class ReconciliationSerializer(serializers.Serializer):
+    farmer_id = serializers.IntegerField(read_only=True)
+    total_advances = serializers.DecimalField(read_only=True, **_MONEY)
+    total_recovered = serializers.DecimalField(read_only=True, **_MONEY)
+    expected_outstanding = serializers.DecimalField(read_only=True, **_MONEY)
+    stored_outstanding = serializers.DecimalField(read_only=True, **_MONEY)
+    difference = serializers.DecimalField(read_only=True, **_MONEY)
+    is_reconciled = serializers.BooleanField(read_only=True)
+
+
+class FarmerLedgerSerializer(serializers.Serializer):
+    farmer_id = serializers.IntegerField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    phone = serializers.CharField(read_only=True)
+    outstanding_advance = serializers.DecimalField(read_only=True, **_MONEY)
+    advances = LedgerAdvanceSerializer(many=True, read_only=True)
+    deliveries = LedgerDeliverySerializer(many=True, read_only=True)
+    payouts = LedgerPayoutSerializer(many=True, read_only=True)
+    reconciliation = ReconciliationSerializer(read_only=True)
+    total_advances = serializers.DecimalField(read_only=True, **_MONEY)
+    settled_earnings = serializers.DecimalField(read_only=True, **_MONEY)
+    total_recovered = serializers.DecimalField(read_only=True, **_MONEY)
+    draft_projection = serializers.DecimalField(read_only=True, **_MONEY)
+    unassigned_earnings = serializers.DecimalField(read_only=True, **_MONEY)
+    total_recorded_amount = serializers.DecimalField(read_only=True, **_MONEY)
+    earnings_identity_holds = serializers.BooleanField(read_only=True)
+    is_reconciled = serializers.BooleanField(read_only=True)
+
+
+# --- Advances ---------------------------------------------------------------
+
+
+class AdvanceSerializer(serializers.ModelSerializer):
+    amount = model_decimal(Advance, "amount", read_only=True)
+
+    class Meta:
+        model = Advance
+        fields = ("id", "farmer", "amount", "given_on", "created_at")
+        read_only_fields = fields
+
+
+class AdvanceCreateSerializer(serializers.Serializer):
+    farmer = FarmerReferenceField(queryset=Farmer.objects.all())
+    amount = model_decimal(Advance, "amount")
+    given_on = serializers.DateField()
+
+    def create(self, validated_data):
+        return post_advance(
+            validated_data["farmer"],
+            validated_data["amount"],
+            validated_data["given_on"],
+        )
+
+
+class AdvanceReconciliationSerializer(serializers.Serializer):
+    """Renders the read-only ``AdvanceReconciliation`` result."""
+
+    farmer_id = serializers.IntegerField(read_only=True)
+    total_advances = serializers.DecimalField(read_only=True, **_MONEY)
+    total_recovered = serializers.DecimalField(read_only=True, **_MONEY)
+    expected_outstanding = serializers.DecimalField(read_only=True, **_MONEY)
+    stored_outstanding = serializers.DecimalField(read_only=True, **_MONEY)
+    difference = serializers.DecimalField(read_only=True, **_MONEY)
+    is_reconciled = serializers.BooleanField(read_only=True)
+
+
+# --- Corrections (credit / debit notes) -------------------------------------
+
+
+class CorrectionReadSerializer(serializers.ModelSerializer):
+    correction_magnitude = model_decimal(
+        Delivery, "correction_magnitude", read_only=True
+    )
+    amount = model_decimal(Delivery, "amount", read_only=True)
+
+    class Meta:
+        model = Delivery
+        fields = (
+            "id",
+            "farmer",
+            "kind",
+            "original_delivery",
+            "correction_magnitude",
+            "reason",
+            "accounting_date",
+            "amount",
+            "payout",
+            "recorded_at",
+        )
+        read_only_fields = fields
+
+
+class CorrectionCreateSerializer(serializers.Serializer):
+    original_delivery = serializers.IntegerField()
+    kind = serializers.ChoiceField(choices=GRADE_NOTE_KINDS)
+    magnitude = model_decimal(Delivery, "correction_magnitude")
+    reason = serializers.CharField()
+
+    def create(self, validated_data):
+        return record_correction(
+            Delivery(pk=validated_data["original_delivery"]),
+            validated_data["kind"],
+            validated_data["magnitude"],
+            validated_data["reason"],
+        )
+
+
+# --- Payouts ----------------------------------------------------------------
+
+
+class PayoutSerializer(serializers.ModelSerializer):
+    gross_amount = model_decimal(Payout, "gross_amount", read_only=True)
+    advance_deduction = model_decimal(Payout, "advance_deduction", read_only=True)
+    net_amount = model_decimal(Payout, "net_amount", read_only=True)
+
+    class Meta:
+        model = Payout
+        fields = (
+            "id",
+            "farmer",
+            "week_start",
+            "week_end",
+            "status",
+            "gross_amount",
+            "advance_deduction",
+            "net_amount",
+            "created_at",
+            "finalised_at",
+            "paid_at",
+        )
+        read_only_fields = fields
+
+
+class PayoutGenerateSerializer(serializers.Serializer):
+    farmer = FarmerReferenceField(queryset=Farmer.objects.all())
+    week_start = serializers.DateField()
+
+    def create(self, validated_data):
+        payout = build_weekly_payout(
+            validated_data["farmer"], validated_data["week_start"]
+        )
+        if payout is None:
+            raise EmptyWeek()
+        return payout

@@ -68,3 +68,27 @@ Produced:
 - README updates: test/coverage status, rule-to-service-to-test mapping,
   numbered limitations, demo/seed aids.
 - This file.
+
+---
+
+## Entry 3 — M3 HTTP API over the service layer
+
+> Start building it
+
+> Continue if you have next steps, or stop and ask for clarification if you are
+> unsure how to proceed.
+
+Produced (all under `backend/`):
+
+- `procurement/api/` — new DRF package: `errors.py` (unified error envelope,
+  code→status map, `api_exception_handler`, `EmptyWeek`), `pagination.py`,
+  `serializers.py` (request-shape validation + decimal-string rendering),
+  `views.py`, `urls.py`.
+- `config/settings.py` — `rest_framework`/`drf_spectacular`/`corsheaders`,
+  `REST_FRAMEWORK`, `SPECTACULAR_SETTINGS`.
+- `config/urls.py` — `/api/v1/` include, `/api/schema/`, `/api/docs/`.
+- `tests/api/` — `test_reference.py`, `test_ledger_api.py`,
+  `test_deliveries.py`, `test_advances.py`, `test_corrections.py`,
+  `test_payouts.py`, `test_schema.py` (marker `m3`).
+- `pytest.ini` — `m3` marker; README §7 rewritten with the endpoint table,
+  pagination/filters, decimal-string responses and error contract.

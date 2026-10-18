@@ -160,19 +160,63 @@ seed idempotency, concurrency, and the M2 business-rule contracts
 
 ## 7. API overview
 
-> The endpoints below are planned for M3; the M2 service layer has no DRF
-> routes yet.
+The M3 HTTP API is mounted under `/api/v1/`. It is a thin adapter over the M2
+service layer: request shape (types, required fields, decimal precision,
+references) is validated by DRF serializers; every business rule stays in
+`procurement/services`. Interactive docs are served by drf-spectacular at
+`/api/docs/`, with the raw schema at `/api/schema/`.
 
-| Method | Endpoint | Purpose | Main error codes |
-|---|---|---|---|
-| POST | /api/v1/deliveries/preview/ | Preview calculation | 400, 404, 422 |
-| POST | /api/v1/deliveries/ | Create delivery | 400, 404, 422 |
-| POST | /api/v1/payouts/generate/ | Generate weekly draft | 400, 404, 409, 422 |
-| POST | /api/v1/payouts/{id}/finalise/ | Finalise payout | 404, 409, 422 |
+All responses use JSON. Money, weights and percentages are rendered as **decimal
+strings** (never JSON floats) at the model field's scale —
+`COERCE_DECIMAL_TO_STRING = True`.
 
-Add every implemented endpoint.
-Explain pagination, filters and decimal-string responses.
-Link the OpenAPI documentation.
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | /api/v1/health/ | Liveness check |
+| GET | /api/v1/farmers/ | List/search farmers (`search`, paginated) |
+| POST | /api/v1/farmers/ | Create a farmer |
+| GET | /api/v1/farmers/{id}/ | Farmer detail |
+| GET | /api/v1/farmers/{id}/ledger/ | Full reconciled ledger |
+| GET | /api/v1/farmers/{id}/advance-reconciliation/ | Advance/recovery reconciliation |
+| GET | /api/v1/crops/ | List crops (read-only) |
+| GET | /api/v1/crops/{id}/ | Crop detail |
+| GET | /api/v1/grades/ | List grades (`crop` filter) |
+| GET | /api/v1/prices/ | List price entries (`crop_grade` filter) |
+| POST | /api/v1/prices/ | Add a price entry (service-validated) |
+| POST | /api/v1/deliveries/preview/ | Preview a delivery calculation (writes nothing) |
+| GET | /api/v1/deliveries/ | List deliveries (`farmer`, `kind`, `from`, `to`, `payout`) |
+| POST | /api/v1/deliveries/ | Record a delivery |
+| GET | /api/v1/deliveries/{id}/ | Delivery detail |
+| PATCH | /api/v1/deliveries/{id}/ | Edit an unsettled delivery |
+| GET | /api/v1/advances/ | List advances (`farmer` filter) |
+| POST | /api/v1/advances/ | Post an advance |
+| GET | /api/v1/advances/{id}/ | Advance detail |
+| GET | /api/v1/corrections/ | List credit/debit notes (`farmer`, `kind`, `original_delivery`) |
+| POST | /api/v1/corrections/ | Record a credit/debit note |
+| GET | /api/v1/corrections/{id}/ | Correction detail |
+| POST | /api/v1/payouts/generate/ | Generate/extend a weekly DRAFT (`farmer`, `week_start`) |
+| GET | /api/v1/payouts/ | List payouts (`farmer`, `status`, `from`, `to`) |
+| GET | /api/v1/payouts/{id}/ | Payout detail |
+| POST | /api/v1/payouts/{id}/finalise/ | Finalise a DRAFT payout (recovers advance) |
+| POST | /api/v1/payouts/{id}/pay/ | Settle a FINALISED payout |
+
+**Pagination.** List endpoints return the standard page envelope
+(`count`, `next`, `previous`, `results`) at 50 items per page; pass `?page=`.
+
+**Filters.** Farmers support `?search=` (name/phone/village). Deliveries,
+advances, corrections and payouts support the query parameters listed above.
+An unknown `kind`/`status` or an unparseable date returns `400`.
+
+**Errors.** Every error uses one envelope:
+`{"error": {"code": "...", "message": "...", "fields": {...} | null}}`. Codes map
+to statuses: 404 for `*_not_found`; 409 for state conflicts
+(`payout_state_error`, `price_already_exists`, `original_not_settled`,
+`original_changed`, `not_editable`, `empty_week`); 422 for well-formed requests
+rejected by a domain rule (`price_not_found`, `grade_not_allowed`,
+`moisture_exceeds_maximum`, `future_delivery_date`, `invalid_moisture_bounds`);
+400 for input/validation errors. Unexpected failures return a generic `500`
+(`internal_error`) with a correlation reference and never expose a traceback or
+credential.
 
 ## 8. Business rules and assumptions
 
