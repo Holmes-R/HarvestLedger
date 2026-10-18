@@ -19,6 +19,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from django.core.exceptions import ValidationError
 
 from procurement.models import Crop, CropGrade, Farmer, PriceListEntry
 
@@ -35,6 +36,14 @@ def _pricing():
 def grade(db):
     crop = Crop.objects.create(
         name="Maize", moisture_threshold=Decimal("14.00"), max_moisture=Decimal("20.00")
+    )
+    return CropGrade.objects.create(crop=crop, code="A")
+
+
+@pytest.fixture
+def paddy_grade(db):
+    crop = Crop.objects.create(
+        name="Paddy", moisture_threshold=Decimal("12.00"), max_moisture=Decimal("18.00")
     )
     return CropGrade.objects.create(crop=crop, code="A")
 
@@ -108,3 +117,125 @@ def test_historical_snapshot_survives_a_later_backdated_price(grade):
 
     snapshot.refresh_from_db()
     assert {field: getattr(snapshot, field) for field in frozen} == frozen
+
+
+# --- Price resolution (extended cases) -------------------------------------
+
+
+def test_multiple_historical_entries_pick_the_latest_eligible(grade):
+    first = _price(grade, "20.00", date(2025, 11, 1))
+    second = _price(grade, "22.00", date(2026, 1, 1))
+    third = _price(grade, "24.50", date(2026, 4, 1))
+    pricing = _pricing()
+
+    assert pricing.resolve_price(grade, date(2025, 12, 31)) == first
+    assert pricing.resolve_price(grade, date(2026, 1, 1)) == second
+    assert pricing.resolve_price(grade, date(2026, 2, 15)) == second
+    assert pricing.resolve_price(grade, date(2026, 4, 1)) == third
+    assert pricing.resolve_price(grade, date(2026, 9, 9)) == third
+
+
+def test_date_before_earliest_price_is_not_eligible(grade):
+    _price(grade, "24.50", date(2026, 1, 1))
+    pricing = _pricing()
+    with pytest.raises(pricing.PriceNotFound):
+        pricing.resolve_price(grade, date(2025, 12, 31))
+
+
+def test_missing_price_error_names_crop_and_grade(grade):
+    pricing = _pricing()
+    with pytest.raises(pricing.PriceNotFound) as excinfo:
+        pricing.resolve_price(grade, date(2026, 1, 1))
+    assert "Maize" in str(excinfo.value)
+    assert "A" in str(excinfo.value)
+    assert excinfo.value.code == "price_not_found"
+
+
+# --- Append-only price creation --------------------------------------------
+
+
+def test_create_price_entry_appends_history(grade):
+    pricing = _pricing()
+    entry = pricing.create_price_entry(grade.crop, "A", "24.50", date(2026, 1, 1))
+
+    assert entry.pk is not None
+    assert entry.crop_grade_id == grade.pk
+    assert entry.price_per_kg == Decimal("24.50")
+    assert entry.effective_from == date(2026, 1, 1)
+    assert pricing.resolve_price(grade, date(2026, 1, 1)) == entry
+
+
+def test_create_price_entry_accepts_a_grade_instance(grade):
+    pricing = _pricing()
+    entry = pricing.create_price_entry(grade.crop, grade, "24.50", date(2026, 1, 1))
+    assert entry.crop_grade_id == grade.pk
+
+
+def test_create_price_entry_rejects_invalid_rates(grade):
+    pricing = _pricing()
+    with pytest.raises(ValidationError):
+        pricing.create_price_entry(grade.crop, "A", "0.00", date(2026, 1, 1))
+    with pytest.raises(ValidationError):
+        pricing.create_price_entry(grade.crop, "A", "24.555", date(2026, 1, 1))
+    assert not PriceListEntry.objects.exists()
+
+
+def test_create_price_entry_rejects_disallowed_grade_code(grade):
+    pricing = _pricing()
+    with pytest.raises(pricing.GradeNotAllowed):
+        pricing.create_price_entry(grade.crop, "Z", "24.50", date(2026, 1, 1))
+    assert not PriceListEntry.objects.exists()
+
+
+def test_create_price_entry_rejects_invalid_crop_grade_relationship(grade, paddy_grade):
+    pricing = _pricing()
+    with pytest.raises(pricing.GradeNotAllowed):
+        pricing.create_price_entry(grade.crop, paddy_grade, "24.50", date(2026, 1, 1))
+    assert not PriceListEntry.objects.exists()
+
+
+def test_duplicate_effective_date_is_rejected(grade):
+    pricing = _pricing()
+    pricing.create_price_entry(grade.crop, "A", "24.50", date(2026, 1, 1))
+
+    with pytest.raises(pricing.PriceAlreadyExists):
+        pricing.create_price_entry(grade.crop, "A", "99.00", date(2026, 1, 1))
+
+    rows = PriceListEntry.objects.filter(crop_grade=grade, effective_from=date(2026, 1, 1))
+    assert rows.count() == 1
+    assert rows.get().price_per_kg == Decimal("24.50")  # never re-priced
+
+
+def test_database_uniqueness_conflict_reports_price_already_exists(grade, monkeypatch):
+    from procurement.services import pricing
+
+    pricing.create_price_entry(grade.crop, "A", "24.50", date(2026, 1, 1))
+
+    # Simulate a concurrent insert slipping past the up-front duplicate check.
+    monkeypatch.setattr(pricing, "_already_priced", lambda *args, **kwargs: False)
+    with pytest.raises(pricing.PriceAlreadyExists):
+        pricing.create_price_entry(grade.crop, "A", "99.00", date(2026, 1, 1))
+
+    assert (
+        PriceListEntry.objects.filter(
+            crop_grade=grade, effective_from=date(2026, 1, 1)
+        ).count()
+        == 1
+    )
+
+
+def test_backdated_price_insertion_does_not_rewrite_existing_entries(grade):
+    pricing = _pricing()
+    original = pricing.create_price_entry(grade.crop, "A", "22.00", date(2026, 1, 1))
+    later = pricing.create_price_entry(grade.crop, "A", "30.00", date(2026, 1, 10))
+    assert pricing.resolve_price(grade, date(2026, 1, 6)) == original
+
+    backdated = pricing.create_price_entry(grade.crop, "A", "10.00", date(2026, 1, 5))
+    assert pricing.resolve_price(grade, date(2026, 1, 6)) == backdated
+
+    original.refresh_from_db()
+    later.refresh_from_db()
+    assert original.price_per_kg == Decimal("22.00")
+    assert original.effective_from == date(2026, 1, 1)
+    assert later.price_per_kg == Decimal("30.00")
+    assert later.effective_from == date(2026, 1, 10)

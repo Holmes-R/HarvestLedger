@@ -35,6 +35,23 @@ class PriceNotFound(ServiceError):
     default_message = "No effective price was found for the requested date."
 
 
+class GradeNotAllowed(ServiceError):
+    """The grade does not exist for the requested crop ("disallowed grade")."""
+
+    code = "grade_not_allowed"
+    default_message = "The grade is not allowed for the requested crop."
+
+
+class PriceAlreadyExists(ServiceError):
+    """A price entry already exists for this grade and effective date."""
+
+    code = "price_already_exists"
+    default_message = (
+        "A price entry already exists for this grade and effective date; "
+        "price history is append-only."
+    )
+
+
 class MoistureExceedsMaximum(ServiceError):
     """Delivery moisture is above the crop's maximum accepted moisture."""
 

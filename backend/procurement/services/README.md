@@ -18,6 +18,8 @@ All domain (business-rule) errors derive from `ServiceError` and carry a stable
 | --- | --- | --- |
 | `ServiceError` | `service_error` | base class; code overridable per instance |
 | `PriceNotFound` | `price_not_found` | no price entry is effective on/before the date |
+| `GradeNotAllowed` | `grade_not_allowed` | grade does not exist for the crop (disallowed grade) |
+| `PriceAlreadyExists` | `price_already_exists` | `(grade, effective_from)` is already priced |
 | `MoistureExceedsMaximum` | `moisture_exceeds_maximum` | delivery moisture `>` crop `max_moisture` |
 | `PayoutStateError` | `payout_state_error` | a payout operation is attempted from an invalid state |
 
@@ -65,7 +67,16 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 ### `procurement.services.pricing`
 
 - `resolve_price(crop_grade, on_date) -> PriceListEntry`
-  - Latest entry with `effective_from <= on_date`; raises `PriceNotFound`.
+  - Latest entry with `effective_from <= on_date` (exact date included; future
+    entries excluded); raises `PriceNotFound` naming the crop and grade.
+- `create_price_entry(crop, grade, price_per_kg, effective_from) -> PriceListEntry`
+  - Append-only: adds a new immutable entry; back-dated dates are allowed and
+    never rewrite existing entries/snapshots. `grade` is a `CropGrade` (must
+    belong to `crop`) or a grade code (must exist under `crop`); otherwise raises
+    `GradeNotAllowed`. Rejects over-precise/non-positive rates with
+    `ValidationError`, and a duplicate `(grade, effective_from)` -- whether
+    caught up front or by the DB unique constraint -- with `PriceAlreadyExists`.
+  - There is intentionally **no update/delete** service function.
 
 ### `procurement.services.advances`
 
@@ -120,9 +131,20 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 | `...::test_no_recovery_on_zero_or_negative_gross` (x2) | `money.advance_recovery` |
 | `tests/integration/test_prices.py::test_exact_effective_date_wins` | `pricing.resolve_price` |
 | `...::test_latest_eligible_price_is_used` | `pricing.resolve_price` |
+| `...::test_multiple_historical_entries_pick_the_latest_eligible` | `pricing.resolve_price` |
 | `...::test_missing_crop_grade_combination_raises` | `pricing.resolve_price` (`PriceNotFound`) |
+| `...::test_date_before_earliest_price_is_not_eligible` | `pricing.resolve_price` (`PriceNotFound`) |
 | `...::test_future_only_price_is_not_eligible` | `pricing.resolve_price` |
-| `...::test_historical_snapshot_survives_a_later_backdated_price` | `pricing.resolve_price` |
+| `...::test_missing_price_error_names_crop_and_grade` | `pricing.resolve_price` (`PriceNotFound`) |
+| `...::test_historical_snapshot_survives_a_later_backdated_price` | `pricing.resolve_price` + `delivery.record_delivery` |
+| `...::test_create_price_entry_appends_history` | `pricing.create_price_entry` |
+| `...::test_create_price_entry_accepts_a_grade_instance` | `pricing.create_price_entry` |
+| `...::test_create_price_entry_rejects_invalid_rates` | `pricing.create_price_entry` (`ValidationError`) |
+| `...::test_create_price_entry_rejects_disallowed_grade_code` | `pricing.create_price_entry` (`GradeNotAllowed`) |
+| `...::test_create_price_entry_rejects_invalid_crop_grade_relationship` | `pricing.create_price_entry` (`GradeNotAllowed`) |
+| `...::test_duplicate_effective_date_is_rejected` | `pricing.create_price_entry` (`PriceAlreadyExists`) |
+| `...::test_database_uniqueness_conflict_reports_price_already_exists` | `pricing.create_price_entry` (`PriceAlreadyExists`) |
+| `...::test_backdated_price_insertion_does_not_rewrite_existing_entries` | `pricing.create_price_entry` + `resolve_price` |
 | `tests/integration/test_delivery_service.py::test_missing_price_writes_nothing` | `delivery.record_delivery` (`PriceNotFound`) |
 | `...::test_freezes_threshold_price_and_breakdown` | `delivery.record_delivery` |
 | `...::test_moisture_over_max_writes_nothing` | `delivery.record_delivery` (`MoistureExceedsMaximum`) |
