@@ -1,10 +1,9 @@
 """Effective-dated price resolution and frozen delivery snapshots.
 
-M2 rule tests (marker ``m2``) except where noted; they are expected to fail
-until the M2 service layer exists and are intentionally not skipped.
+M2 rule tests (marker ``m2``); they exercise the implemented service layer.
 
-Contract exercised (to be provided by M2)
------------------------------------------
+Contract exercised
+------------------
 ``procurement.services.pricing.resolve_price(crop_grade, on_date) ->
 PriceListEntry`` -- the row with the greatest ``effective_from <= on_date``,
 raising ``procurement.services.pricing.PriceNotFound`` for a crop/grade with no

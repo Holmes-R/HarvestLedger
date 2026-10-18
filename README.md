@@ -108,33 +108,44 @@ Run the M1 suite (the green gate) from `backend/`:
 python -m pytest -m "not m2"
 ```
 
-Run everything (M1 + the pending M2 rule tests):
+Run everything (M1 regression + M2 business rules):
 
 ```bash
 python -m pytest
 ```
 
-Run just the pending M2 rule tests, which fail by design until the M2 service
-layer exists:
+Run only the M2 business-rule tests (marker `m2`). The marker is a selection
+convenience; there is no `xfail`/`skip` anywhere, so a failing rule test fails
+the build rather than being hidden.
 
 ```bash
 python -m pytest -m m2
 ```
 
-Actual M1 status (verified on this checkout):
+Measure coverage with the project's configured tooling (`pytest-cov`, from
+`backend/`):
 
-- `python -m pytest -m "not m2" --reuse-db` -> **119 passed, 45 deselected**
-  against the isolated local PostgreSQL test database.
-- `python -m pytest -m m2` was not rerun for this phone-format change; the M2
-  service layer is still pending.
-- `python manage.py check` -> no issues; `makemigrations --check` -> no drift.
-- `python -m pytest tests/integration/test_seed.py` -> **6 passed**.
+```bash
+python -m pytest --cov=procurement --cov-report=term-missing
+```
+
+Actual status (verified on this checkout, PostgreSQL test database):
+
+- `python -m pytest --reuse-db` -> **274 passed** (147 `m2`, 127 M1).
+- `python -m pytest tests/integration/test_concurrency.py` -> **3 passed**
+  (independent PostgreSQL connections; verifies persisted balances, membership
+  and totals).
+- `python manage.py check` -> no issues; `makemigrations --check --dry-run` ->
+  no drift.
+- Coverage: **97.0%** on the M2 services layer (`procurement/services/`),
+  **95.7%** on the combined business-rules layer (services + `models.py` +
+  `precision.py` + `clock.py`), and **96.0%** on the whole `procurement` package.
+  See [COVERAGE.md](COVERAGE.md) for the full breakdown and the exact command.
 
 Unit tests cover the business clock, numeric precision and the demo manifest.
 Integration tests cover deletion protection, admin guardrails, weekly policy,
-seed idempotency, and the M2 business-rule contracts (prices, payouts,
-corrections, delivery maths). Coverage is not measured yet — no `pytest-cov`
-figure is claimed here.
+seed idempotency, concurrency, and the M2 business-rule contracts
+(prices, payouts, corrections, delivery maths, advances, ledger).
 
 ## 7. API overview
 
@@ -164,20 +175,23 @@ validation, and the PostgreSQL check constraint. The migration converts only
 the three original named demo farmers' old placeholder numbers. Any other
 invalid stored number must be corrected before the migration can finish.
 
-At M1 the seven assignment rules are represented by the schema, constraints and
-design documents. The executable rule logic arrives with the M2 service layer,
-so the M2 tests below fail by design (`ModuleNotFoundError:
-procurement.services`) until it exists.
+The seven assignment rules are enforced both by the schema/constraints (M1) and
+by the executable M2 service layer (`procurement/services/`). The table maps
+each rule to its schema guarantee, its owning service function(s) and the tests
+that exercise it. (`services/README.md` carries the finer service-to-test map.)
 
-| Rule | M1 status (schema/constraints) | M2 owner (services/) | Test |
+| Rule | Schema/constraints status (M1) | Owner (services/) | Test |
 |---|---|---|---|
-| Effective-dated pricing | `PriceListEntry (crop_grade, effective_from)` unique; `price_per_kg > 0` | `pricing.resolve_price` | `test_prices.py` |
+| Effective-dated pricing | `PriceListEntry (crop_grade, effective_from)` unique; `price_per_kg > 0` | `pricing.resolve_price`, `pricing.create_price_entry` | `test_prices.py` |
 | Moisture deduction | `Crop.moisture_threshold` / `max_moisture` bounded 0..100 | `delivery.calculate_breakdown` | `test_delivery_math.py` |
-| Frozen delivery breakdown | `Delivery.threshold_used`, `applied_price`, `price_list_entry`, `deduction_*`, `net_kg`, `amount`, `calculation_version` | `delivery.record_delivery` | `test_prices.py`, `test_payouts.py` |
+| Frozen delivery breakdown | `Delivery.threshold_used`, `applied_price`, `price_list_entry`, `deduction_*`, `net_kg`, `amount`, `calculation_version` | `delivery.record_delivery`, `delivery.preview_delivery`, `delivery.edit_delivery` | `test_prices.py`, `test_delivery_service.py`, `test_payouts.py` |
 | Weekly payout selection | `Payout` + partial unique `payout_one_draft_farmer_week`; Monday..Sunday bounds from `clock.week_bounds` | `payouts.build_weekly_payout` | `test_payouts.py`, `test_weekly_policy.py` |
-| Advance recovery | `Advance` + `Farmer.outstanding_advance >= 0`; no `(farmer, given_on)` dedup key | `advances.post_advance`, `payouts.finalise_payout` | `test_payouts.py` |
+| Advance recovery | `Advance` + `Farmer.outstanding_advance >= 0`; no `(farmer, given_on)` dedup key | `advances.post_advance`, `payouts.finalise_payout`, `advances.assert_outstanding_reconciles` | `test_advances.py`, `test_payouts.py` |
 | Immutability and corrections | note constraints (original required, positive magnitude, non-blank reason); `PayoutStatus` | `corrections.record_correction` | `test_corrections.py` |
 | Delivery validation | `delivery_procurement_positive`, `delivery_note_requires_fields`, `delivery_accounting_matches_delivered` | `delivery.record_delivery` | `test_delivery_math.py`, `test_prices.py` |
+| Finalisation / settlement states | `PayoutStatus` DRAFT -> FINALISED -> PAID; frozen payout fields | `payouts.finalise_payout`, `payouts.mark_payout_paid` | `test_payouts.py` |
+| Read-only farmer ledger | (derived; no new schema) | `ledger.build_farmer_ledger` | `test_ledger.py` |
+| Concurrency safety | row locks + fixed lock order (`locking.py`) | all services | `test_concurrency.py`, `test_advances.py`, `test_payouts.py`, `test_corrections.py` |
 
 ### 8.1 Precision assumptions
 
@@ -261,37 +275,44 @@ sensitive-data exclusions and hosted log access.
   missing-rate example, draft/finalised/paid payouts, a correction note and its
   supplementary payout. Running it again reports every row as *existing*, adds
   nothing, reapplies no recovery and leaves balances and snapshots untouched.
-- **Demo scenarios (M2):** declared in `backend/procurement/scenarios.py` —
+- **Demo scenarios:** declared in `backend/procurement/scenarios.py` —
   `multiple-weeks`, `moisture-boundaries`, `missing-rate`, `backdated-price`,
-  `large-advance`, `finalised-and-corrections`. They are a specification for M2,
-  not executed in M1.
+  `large-advance`, `finalised-and-corrections`. They are a readable
+  specification; `seed_data` executes a comparable subset through the services.
 - **Reviewer clock:** `procurement.clock` exposes `use_clock(FrozenClock(...))`
   for tests. There is intentionally no API endpoint to change the clock.
 - **Safe reseeding:** the command is non-destructive (`get_or_create`), so it is
-  safe to re-run at any time. To start clean, delete `backend/db.sqlite3` (it is
-  git-ignored) and re-run `migrate` then `seed_data`.
+  safe to re-run at any time. To start clean, drop and recreate the database,
+  then run `migrate` and `seed_data`.
 - **Reproduce edge cases:** run `python -m pytest tests/integration/test_seed.py`
-  for seed behaviour, and `python -m pytest -m m2` to see the pending M2 rules.
+  for seed behaviour, `python -m pytest tests/integration/test_concurrency.py`
+  for the locking guarantees, and `python -m pytest -m m2` for the M2 rules.
+- **Coverage:** [COVERAGE.md](COVERAGE.md) records the command and the
+  business-rules vs overall figures.
 
 ## 11. Known limitations
 
-**M1 is complete; the rest is not built yet.**
+**M1 (schema, constraints, admin, seed) and M2 (business-rule service layer) are
+complete; the API and UI are not built yet.**
 
-- Core requirements still to implement (M2+): the service layer
-  (`procurement/services/`) for pricing, delivery maths, advance posting, weekly
-  payout generation and corrections; the DRF API; the React frontend; and the
-  PostgreSQL/Docker wiring. The 28 `m2`-marked tests currently fail with
-  `ModuleNotFoundError`.
-- Design restrictions chosen deliberately: seeded financial rows are written
-  only through the service layer (never by direct ORM writes), so recovery,
-  immutability and effective-dated rules are enforced; history FKs are `PROTECT`
-  (only `CropGrade.crop` is `CASCADE`); prices are append-only in admin; there is
-  no frontend clock-override endpoint.
-- Unresolved product decisions listed in `clock.py` (intra-day cutoff,
-  corrections against PAID weeks, multiple supplementaries, IST-input
-  guarantee, back-dating limits).
-- Deployment/hosting, coverage figures and live links are not available yet and
-  are intentionally left as placeholders earlier in this README.
+1. Not implemented at this milestone: the DRF API, the React frontend, and
+   production hosting/Docker wiring. No HTTP endpoint or UI is claimed here.
+   Section 7 and the `api/v1` routes remain planned-only.
+2. Deployment, hosting, live links and CI are not available yet and are left as
+   placeholders earlier in this README.
+3. Concurrency is proven only against a single PostgreSQL instance with
+   `select_for_update()`; there is no distributed-lock layer for a future
+   multi-database topology (not required by the assignment).
+4. The reviewer database `HarvestDB` has not been migrated to
+   `0002_farmer_indian_mobile` (historical rows are preserved); a database whose
+   `phone` values predate the Indian-mobile rule will reject that migration until
+   the data is corrected.
+5. Unresolved product decisions listed in `clock.py` (intra-day cutoff,
+   corrections against PAID weeks, multiple supplementaries per farmer/week,
+   external-date IST guarantee, back-dating limits) remain intentionally
+   deferred rather than invented.
+6. `requirements.txt` is UTF-8; if a tool rewrites it as UTF-16, re-save it
+   before `pip install -r`.
 
 ## 12. AI and third-party usage
 
@@ -301,6 +322,4 @@ sensitive-data exclusions and hosted log access.
   (`django-admin startproject` / `startapp`) and the pinned packages in
   `backend/requirements.txt`; no external templates or snippets were copied.
 
-See [PROMPTS.md](PROMPTS.md) for the record of prompts actually used. It is
-currently minimal — earlier entries must be transcribed from the author's real
-session history and have not been invented here.
+See [PROMPTS.md](PROMPTS.md) for the record of prompts actually used.

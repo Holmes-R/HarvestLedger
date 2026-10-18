@@ -1,9 +1,10 @@
-"""M2 scenario manifest (declarative documentation, not executed in M1).
+"""M2 scenario manifest (declarative documentation).
 
 This module describes the financial situations the M2 service layer and payout
-engine must handle. It is **data only**: importing it writes nothing. The
-advances, deliveries and payouts below cannot be created until M2 services
-exist, so at M1 they are a specification that tests can read.
+engine handle. It is **data only**: importing it writes nothing. The M2 services
+now exist; ``python manage.py seed_data`` executes a comparable demo subset
+through those services, while this manifest stays a readable specification the
+tests reference.
 
 Coverage
 --------

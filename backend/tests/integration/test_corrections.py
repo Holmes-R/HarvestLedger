@@ -1,13 +1,12 @@
 """Credit/debit note corrections.
 
 M1 model constraints (a note must reference an original delivery, carry a
-positive magnitude and a non-blank reason) pass at M1. The M2 service layer
-(marker ``m2``) is exercised for farmer inheritance, credit/debit sign,
-business-date stamping and inclusion in the next eligible payout; those tests are
-expected to fail until M2 exists and are not skipped.
+positive magnitude and a non-blank reason) run first; the M2 service layer
+(marker ``m2``) is then exercised for farmer inheritance, credit/debit sign,
+business-date stamping and inclusion in the next eligible payout.
 
-Contract exercised (to be provided by M2)
------------------------------------------
+Contract exercised
+------------------
 ``procurement.services.corrections.record_correction(
     original_delivery, kind, magnitude, reason) -> Delivery`` -- creates a
 CREDIT_NOTE (+) or DEBIT_NOTE (-) correction against ``original_delivery``,
@@ -135,7 +134,7 @@ def test_note_requires_positive_magnitude(farmer, grade):
         )
 
 
-# --- M2 service rules (expected to fail until M2) --------------------------
+# --- M2 service rules ------------------------------------------------------
 
 
 @pytest.mark.m2

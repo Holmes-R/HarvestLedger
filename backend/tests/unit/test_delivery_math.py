@@ -1,11 +1,10 @@
-"""Delivery moisture/money engine rules.
+"""Delivery moisture/money engine rules (M2).
 
-These are M2 rule tests. They call the not-yet-implemented M2 service layer and
-are expected to fail (marker ``m2``) until it exists. They are intentionally
-*not* skipped: a skip would hide the gap.
+These tests exercise the implemented M2 service layer (marker ``m2``); they run
+against the real code, not a pending stub.
 
-Contract exercised (to be provided by M2)
------------------------------------------
+Contract exercised
+------------------
 ``procurement.services.delivery.calculate_breakdown(
     gross_weight_kg, moisture_percent, price_per_kg, threshold, max_moisture
 ) -> Breakdown``

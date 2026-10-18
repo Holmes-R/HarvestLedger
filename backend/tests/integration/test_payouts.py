@@ -1,11 +1,11 @@
 """Payout grouping, advance recovery and finalisation rules.
 
 Model-level behaviour (one Draft per farmer/week, single delivery membership) is
-enforced at M1 and passes. The remaining cases exercise the M2 service layer
-(marker ``m2``) and are expected to fail until it exists; they are not skipped.
+enforced at M1. The remaining cases exercise the implemented M2 service layer
+(marker ``m2``).
 
-Contract exercised (to be provided by M2)
------------------------------------------
+Contract exercised
+------------------
 ``procurement.services.payouts.build_weekly_payout(farmer, week_start) ->
 Payout | None`` -- creates/extends the DRAFT payout for the Monday-Sunday week,
 attaching that farmer's unassigned deliveries in ``[week_start, week_start+6]``;
@@ -125,7 +125,7 @@ def test_delivery_membership_is_a_single_foreign_key(farmer, grade):
     assert not second.deliveries.filter(pk=delivery.pk).exists()
 
 
-# --- M2 rule tests (expected to fail until M2) -----------------------------
+# --- M2 rule tests ----------------------------------------------------------
 
 
 @pytest.mark.m2

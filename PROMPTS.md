@@ -1,0 +1,70 @@
+# Prompt record
+
+Record of the prompts actually used with the AI assistant, and what each
+produced. Entries are transcribed verbatim from the session; nothing here is
+reconstructed or invented. Prompts from the earlier M1 session are not
+reproduced because they were not captured verbatim — they are deliberately left
+out rather than guessed at.
+
+Tooling: [opencode](https://opencode.ai) CLI coding agent.
+
+---
+
+## Entry 1 — Farmer ledger + financial demo seed
+
+> Implement a read-only farmer ledger that shows, for one farmer, every
+> delivery and correction note, every advance, every payout with its status and
+> the arithmetic that produced it, the current outstanding advance balance, and
+> a reconciliation of that balance. It must not modify anything. Extend
+> `seed_data` into a repeatable, idempotent demo that uses the service layer to
+> produce advances (including two to a farmer on one day), deliveries across
+> several weeks covering the moisture boundaries and an effective-date price
+> change, a missing-rate example that must not be persisted, draft/finalised/paid
+> payouts, a correction note and its supplementary payout. Re-running the seed
+> must add nothing and must not change balances or frozen snapshots.
+
+Produced:
+
+- `backend/procurement/services/ledger.py` — `build_farmer_ledger(farmer)`
+  returning read-only `FarmerLedger` dataclasses (deliveries, advances, payouts,
+  outstanding balance, reconciliation).
+- `backend/tests/integration/test_ledger.py` — 6 tests.
+- `backend/procurement/management/commands/seed_data.py` — reference data plus a
+  service-built financial demo.
+- `backend/tests/integration/test_seed.py` — extended idempotency/integrity
+  tests.
+
+---
+
+## Entry 2 — M2 review, verification and commit-ready deliverables
+
+> Review M2 against every assignment business rule and the README. Run: all
+> former pending M2 tests; M1 model and seed regression tests; additional
+> concurrency tests using independent PostgreSQL connections and
+> transaction-capable test fixtures; Django system checks; migration-drift
+> checks; seed idempotency checks; coverage using the project's configured
+> tooling. Ensure concurrency tests verify persisted balances, membership, and
+> totals rather than merely checking that requests completed. Report
+> business-rules coverage and overall backend coverage separately. Target at
+> least 80% coverage on the business-rules layer, without weakening tests to
+> raise the percentage. Commit-ready deliverables: actual service
+> implementations; passing tests for all implemented rules; repeatable complete
+> demo seed; coverage summary file; README rule-to-service-to-test mapping;
+> numbered assumptions and genuine limitations; accurate PROMPTS.md entries.
+> Review M2 markers: keep useful selection markers, but remove obsolete
+> pending/xfail treatment for completed cases; unexpected passing xfails must
+> not hide results. Report exact commands, results, remaining failures and
+> whether M2 is complete. Do not claim API/UI functionality at this milestone.
+> Do not commit or push automatically.
+
+Produced:
+
+- `backend/tests/integration/test_concurrency.py` — 3 concurrency tests over
+  independent PostgreSQL connections asserting persisted balances, membership
+  and totals.
+- Removed obsolete "pending M2 / expected to fail" wording from the `m2` test
+  modules and `scenarios.py`; kept the `m2` selection marker (no `xfail`/`skip`).
+- `COVERAGE.md` — coverage command, business-rules vs overall results.
+- README updates: test/coverage status, rule-to-service-to-test mapping,
+  numbered limitations, demo/seed aids.
+- This file.
