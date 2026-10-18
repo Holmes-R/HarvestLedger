@@ -21,6 +21,7 @@ from procurement.models import (
     PriceListEntry,
 )
 from procurement.services import delivery, payouts, pricing
+from procurement.services.errors import ServiceError
 
 pytestmark = pytest.mark.m2
 
@@ -234,6 +235,161 @@ def test_preview_requires_a_saved_farmer_and_grade(grade):
             gross_weight_kg=Decimal("100.000"),
             moisture_percent=Decimal("14.00"),
         )
+
+
+def test_record_requires_a_farmer_before_locking(grade):
+    _price(grade, "24.50", date(2026, 1, 1))
+    try:
+        with pytest.raises(ValidationError) as error:
+            delivery.record_delivery(
+                farmer=None,
+                crop_grade=grade,
+                delivered_on=DELIVERED_ON,
+                gross_weight_kg=Decimal("100.000"),
+                moisture_percent=Decimal("14.00"),
+                clock=_frozen(date(2026, 1, 20)),
+            )
+    finally:
+        assert Delivery.objects.count() == 0
+    assert error.value.code == "farmer_required"
+
+
+def test_record_rejects_a_nonexistent_farmer_with_domain_error(grade):
+    _price(grade, "24.50", date(2026, 1, 1))
+    missing = Farmer(pk=99999999, name="Missing", phone="9000000099", village="Kolar")
+    try:
+        with pytest.raises(ServiceError) as error:
+            delivery.record_delivery(
+                farmer=missing,
+                crop_grade=grade,
+                delivered_on=DELIVERED_ON,
+                gross_weight_kg=Decimal("100.000"),
+                moisture_percent=Decimal("14.00"),
+                clock=_frozen(date(2026, 1, 20)),
+            )
+    finally:
+        assert Delivery.objects.count() == 0
+    assert error.value.code == "farmer_not_found"
+
+
+def test_record_rejects_weight_exceeding_field_capacity(farmer, grade):
+    _price(grade, "1.00", date(2026, 1, 1))
+    try:
+        with pytest.raises(ValidationError) as error:
+            delivery.record_delivery(
+                farmer=farmer,
+                crop_grade=grade,
+                delivered_on=DELIVERED_ON,
+                gross_weight_kg=Decimal("1000000000.000"),
+                moisture_percent=Decimal("14.00"),
+                clock=_frozen(date(2026, 1, 20)),
+            )
+    finally:
+        assert Delivery.objects.count() == 0
+    assert error.value.code == "max_whole_digits"
+
+
+def test_record_rejects_calculated_amount_exceeding_field_capacity(farmer, grade):
+    _price(grade, "9999999999.99", date(2026, 1, 1))
+    try:
+        with pytest.raises(ValidationError) as error:
+            delivery.record_delivery(
+                farmer=farmer,
+                crop_grade=grade,
+                delivered_on=DELIVERED_ON,
+                gross_weight_kg=Decimal("999999999.999"),
+                moisture_percent=Decimal("14.00"),
+                clock=_frozen(date(2026, 1, 20)),
+            )
+    finally:
+        assert Delivery.objects.count() == 0
+    assert error.value.code == "max_whole_digits"
+
+
+def test_preview_rejects_an_unpersistable_calculated_amount(farmer, grade):
+    _price(grade, "9999999999.99", date(2026, 1, 1))
+    with pytest.raises(ValidationError) as error:
+        delivery.preview_delivery(
+            farmer=farmer,
+            crop_grade=grade,
+            delivered_on=DELIVERED_ON,
+            gross_weight_kg=Decimal("999999999.999"),
+            moisture_percent=Decimal("14.00"),
+            clock=_frozen(date(2026, 1, 20)),
+        )
+    assert error.value.code == "max_whole_digits"
+    assert Delivery.objects.count() == 0
+
+
+def test_rounding_across_amount_capacity_is_rejected_before_save(farmer, grade):
+    _price(grade, "9999000099.99", date(2026, 1, 1))
+    # Both inputs fit their fields. The product is just below 10^12 but
+    # ROUND_HALF_UP at 2 dp produces 1,000,000,000,000.00, which does not fit.
+    assert Decimal("100.010") * Decimal("9999000099.99") == Decimal(
+        "999999999999.99990"
+    )
+    kwargs = {
+        "farmer": farmer,
+        "crop_grade": grade,
+        "delivered_on": DELIVERED_ON,
+        "gross_weight_kg": Decimal("100.010"),
+        "moisture_percent": Decimal("14.00"),
+        "clock": _frozen(date(2026, 1, 20)),
+    }
+    with pytest.raises(ValidationError) as preview_error:
+        delivery.preview_delivery(**kwargs)
+    assert preview_error.value.code == "max_whole_digits"
+    with pytest.raises(ValidationError) as save_error:
+        delivery.record_delivery(**kwargs)
+    assert save_error.value.code == "max_whole_digits"
+    assert Delivery.objects.count() == 0
+
+
+def test_largest_representable_weight_and_rate_can_be_saved(farmer, grade):
+    _price(grade, "1.00", date(2026, 1, 1))
+    weight_edge = delivery.record_delivery(
+        farmer=farmer,
+        crop_grade=grade,
+        delivered_on=DELIVERED_ON,
+        gross_weight_kg=Decimal("999999999.999"),
+        moisture_percent=Decimal("14.00"),
+        clock=_frozen(date(2026, 1, 20)),
+    )
+    _price(grade, "9999999999.99", date(2026, 1, 5))
+    rate_edge = delivery.record_delivery(
+        farmer=farmer,
+        crop_grade=grade,
+        delivered_on=DELIVERED_ON,
+        gross_weight_kg=Decimal("1.000"),
+        moisture_percent=Decimal("14.00"),
+        clock=_frozen(date(2026, 1, 20)),
+    )
+    weight_edge.refresh_from_db()
+    rate_edge.refresh_from_db()
+    assert weight_edge.gross_weight_kg == Decimal("999999999.999")
+    assert weight_edge.amount == Decimal("1000000000.00")
+    assert rate_edge.applied_price == Decimal("9999999999.99")
+    assert rate_edge.amount == Decimal("9999999999.99")
+    assert Delivery.objects.count() == 2
+
+
+def test_record_distinguishes_invalid_and_missing_crop_grade(farmer, grade):
+    _price(grade, "1.00", date(2026, 1, 1))
+    kwargs = {
+        "farmer": farmer,
+        "delivered_on": DELIVERED_ON,
+        "gross_weight_kg": Decimal("1.000"),
+        "moisture_percent": Decimal("14.00"),
+        "clock": _frozen(date(2026, 1, 20)),
+    }
+    with pytest.raises(ValidationError) as invalid:
+        delivery.record_delivery(crop_grade=None, **kwargs)
+    assert invalid.value.code == "crop_grade_required"
+    missing_grade = CropGrade(pk=99999999, crop=grade.crop, code="B")
+    with pytest.raises(ServiceError) as missing:
+        delivery.record_delivery(crop_grade=missing_grade, **kwargs)
+    assert missing.value.code == "crop_grade_not_found"
+    assert Delivery.objects.count() == 0
 
 
 # --- Snapshot immutability -------------------------------------------------

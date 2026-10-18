@@ -22,12 +22,20 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from procurement.models import Crop, CropGrade, PriceListEntry
-from procurement.precision import MONEY_PLACES, quantize, validate_precision
+from procurement.precision import MONEY_PLACES, quantize, validate_decimal_field
 
-from .errors import GradeNotAllowed, PriceAlreadyExists, PriceNotFound
+from .errors import (
+    CropGradeNotFound,
+    CropNotFound,
+    GradeNotAllowed,
+    PriceAlreadyExists,
+    PriceNotFound,
+)
 from .validation import as_decimal
 
 __all__ = [
+    "CropGradeNotFound",
+    "CropNotFound",
     "GradeNotAllowed",
     "PriceAlreadyExists",
     "PriceNotFound",
@@ -47,6 +55,7 @@ def resolve_price(crop_grade: CropGrade, on_date: date) -> PriceListEntry:
     Raises :class:`PriceNotFound` -- naming the missing crop and grade -- when no
     eligible entry exists.
     """
+    crop_grade = require_crop_grade(crop_grade)
     entry = (
         PriceListEntry.objects.filter(
             crop_grade=crop_grade, effective_from__lte=on_date
@@ -62,6 +71,27 @@ def resolve_price(crop_grade: CropGrade, on_date: date) -> PriceListEntry:
     return entry
 
 
+def require_crop_grade(crop_grade: CropGrade) -> CropGrade:
+    """Return a stored grade, distinguishing missing input from a stale ID."""
+    if not isinstance(crop_grade, CropGrade) or crop_grade.pk is None:
+        raise ValidationError(
+            "A saved crop grade is required.", code="crop_grade_required"
+        )
+    try:
+        return CropGrade.objects.select_related("crop").get(pk=crop_grade.pk)
+    except CropGrade.DoesNotExist as exc:
+        raise CropGradeNotFound(f"Crop grade {crop_grade.pk} was not found.") from exc
+
+
+def _require_crop(crop: Crop) -> Crop:
+    if not isinstance(crop, Crop) or crop.pk is None:
+        raise ValidationError("A saved crop is required.", code="crop_required")
+    try:
+        return Crop.objects.get(pk=crop.pk)
+    except Crop.DoesNotExist as exc:
+        raise CropNotFound(f"Crop {crop.pk} was not found.") from exc
+
+
 def _resolve_allowed_grade(crop: Crop, grade: CropGrade | str) -> CropGrade:
     """Return the ``CropGrade`` for ``crop``, rejecting a disallowed grade.
 
@@ -70,14 +100,18 @@ def _resolve_allowed_grade(crop: Crop, grade: CropGrade | str) -> CropGrade:
     crop/grade relationship is validated before any price is written.
     """
     if isinstance(grade, CropGrade):
-        if grade.crop_id != crop.pk:
+        stored_grade = require_crop_grade(grade)
+        if stored_grade.crop_id != crop.pk:
             raise GradeNotAllowed(
-                f"Grade '{grade.code}' belongs to crop "
-                f"'{grade.crop.name}', not '{crop.name}'."
+                f"Grade '{stored_grade.code}' belongs to crop "
+                f"'{stored_grade.crop.name}', not '{crop.name}'."
             )
-        return grade
+        return stored_grade
 
-    code = str(grade)
+    if not isinstance(grade, str) or not grade:
+        raise ValidationError("A crop grade is required.", code="crop_grade_required")
+
+    code = grade
     resolved = CropGrade.objects.filter(crop=crop, code=code).first()
     if resolved is None:
         raise GradeNotAllowed(
@@ -110,7 +144,7 @@ def create_price_entry(
     database unique constraint -- with :class:`PriceAlreadyExists`.
     """
     value = as_decimal(price_per_kg, "price_per_kg")
-    validate_precision(value, MONEY_PLACES, "price_per_kg")
+    validate_decimal_field(value, PriceListEntry, "price_per_kg")
     if value <= 0:
         raise ValidationError(
             "price_per_kg must be greater than zero.", code="not_positive"
@@ -118,6 +152,7 @@ def create_price_entry(
     if effective_from is None:
         raise ValidationError("effective_from is required.", code="required")
 
+    crop = _require_crop(crop)
     crop_grade = _resolve_allowed_grade(crop, grade)
     price = quantize(value, MONEY_PLACES)
 
@@ -134,6 +169,11 @@ def create_price_entry(
                 effective_from=effective_from,
             )
         except IntegrityError as exc:
+            constraint = getattr(
+                getattr(exc.__cause__, "diag", None), "constraint_name", None
+            )
+            if constraint != "pricelist_grade_eff_unique":
+                raise
             raise PriceAlreadyExists(
                 f"A price for crop '{crop.name}' grade '{crop_grade.code}' "
                 f"effective {effective_from} already exists."

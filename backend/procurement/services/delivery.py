@@ -48,6 +48,7 @@ from django.db import transaction
 
 from procurement.clock import Clock, get_clock, week_start
 from procurement.models import (
+    Crop,
     CropGrade,
     Delivery,
     DeliveryKind,
@@ -58,17 +59,16 @@ from procurement.models import (
 )
 from procurement.precision import (
     DERIVED_KG_PLACES,
-    GROSS_KG_PLACES,
     MOISTURE_PLACES,
     MONEY_PLACES,
     quantize,
-    validate_precision,
+    validate_decimal_field,
 )
 
-from .errors import MoistureExceedsMaximum, PayoutStateError
+from .errors import FarmerNotFound, MoistureExceedsMaximum, PayoutStateError
 from .locking import lock_farmer, lock_payout
 from .money import quantize_money
-from .pricing import resolve_price
+from .pricing import require_crop_grade, resolve_price
 from .validation import as_decimal
 
 __all__ = [
@@ -143,11 +143,12 @@ def calculate_breakdown(
     moisture_threshold = as_decimal(threshold, "threshold")
     moisture_max = as_decimal(max_moisture, "max_moisture")
 
-    validate_precision(gross, GROSS_KG_PLACES, "gross_weight_kg")
-    validate_precision(moisture, MOISTURE_PLACES, "moisture_percent")
-    validate_precision(price, MONEY_PLACES, "price_per_kg")
-    validate_precision(moisture_threshold, MOISTURE_PLACES, "threshold")
-    validate_precision(moisture_max, MOISTURE_PLACES, "max_moisture")
+    validate_decimal_field(gross, Delivery, "gross_weight_kg")
+    validate_decimal_field(moisture, Delivery, "moisture_percent")
+    validate_decimal_field(price, PriceListEntry, "price_per_kg")
+    validate_decimal_field(price, Delivery, "applied_price")
+    validate_decimal_field(moisture_threshold, Crop, "moisture_threshold")
+    validate_decimal_field(moisture_max, Crop, "max_moisture")
 
     _require_positive(gross, "gross_weight_kg")
     _require_positive(moisture, "moisture_percent")
@@ -178,6 +179,11 @@ def calculate_breakdown(
     )
     net_kg = quantize(gross - deduction_kg, DERIVED_KG_PLACES)
     amount = quantize(net_kg * price, MONEY_PLACES)
+
+    validate_decimal_field(deduction_percent, Delivery, "deduction_percent")
+    validate_decimal_field(deduction_kg, Delivery, "deduction_kg")
+    validate_decimal_field(net_kg, Delivery, "net_kg")
+    validate_decimal_field(amount, Delivery, "amount")
 
     return Breakdown(
         deduction_percent=deduction_percent,
@@ -217,12 +223,11 @@ def _build_preview(
     Read-only: performs no writes. Shared by :func:`preview_delivery` and
     :func:`record_delivery`, so a preview and the record it precedes always agree.
     """
-    if farmer is None or getattr(farmer, "pk", None) is None:
+    if not isinstance(farmer, Farmer) or farmer.pk is None:
         raise ValidationError("A saved farmer is required.", code="farmer_required")
-    if crop_grade is None or getattr(crop_grade, "pk", None) is None:
-        raise ValidationError(
-            "A saved crop grade is required.", code="crop_grade_required"
-        )
+    if not Farmer.objects.filter(pk=farmer.pk).exists():
+        raise FarmerNotFound(f"Farmer {farmer.pk} was not found.")
+    crop_grade = require_crop_grade(crop_grade)
 
     today = (clock or get_clock()).today()
     _validate_delivered_on(delivered_on, today)
@@ -294,10 +299,15 @@ def record_delivery(
     client-supplied breakdown or earlier preview is trusted.
     """
     # Authoritative: recalculate from the raw measurements, inside the lock.
+    if not isinstance(farmer, Farmer) or farmer.pk is None:
+        raise ValidationError("A saved farmer is required.", code="farmer_required")
     with transaction.atomic():
-        lock_farmer(farmer.pk)
+        try:
+            locked_farmer = lock_farmer(farmer.pk)
+        except Farmer.DoesNotExist as exc:
+            raise FarmerNotFound(f"Farmer {farmer.pk} was not found.") from exc
         preview = _build_preview(
-            farmer=farmer,
+            farmer=locked_farmer,
             crop_grade=crop_grade,
             delivered_on=delivered_on,
             gross_weight_kg=gross_weight_kg,
@@ -305,7 +315,7 @@ def record_delivery(
             clock=clock,
         )
         return Delivery.objects.create(
-            farmer=farmer,
+            farmer=locked_farmer,
             kind=DeliveryKind.PROCUREMENT,
             crop_grade=preview.crop_grade,
             delivered_on=preview.delivered_on,
@@ -325,6 +335,8 @@ def record_delivery(
 def _refresh_draft(payout: Payout) -> None:
     """Recompute a DRAFT payout's totals from its current deliveries."""
     gross = quantize_money(sum((d.amount for d in payout.deliveries.all()), ZERO))
+    validate_decimal_field(gross, Payout, "gross_amount")
+    validate_decimal_field(gross, Payout, "net_amount")
     payout.gross_amount = gross
     # A draft never reduces the balance; net tracks gross until finalised.
     payout.net_amount = gross

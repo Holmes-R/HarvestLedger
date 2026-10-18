@@ -97,6 +97,139 @@ def _frozen(business_day):
     return FrozenClock(instant)
 
 
+@pytest.mark.m2
+def test_correction_magnitude_exceeding_field_capacity_is_atomic(farmer, grade):
+    from procurement.services import corrections
+
+    original, payout = _finalised_original(farmer, grade)
+    before = Delivery.objects.count()
+    with pytest.raises(ValidationError) as error:
+        corrections.record_correction(
+            original, DeliveryKind.CREDIT_NOTE, Decimal("1000000000000.00"), "review"
+        )
+    assert error.value.code == "max_whole_digits"
+    original.refresh_from_db()
+    payout.refresh_from_db()
+    assert Delivery.objects.count() == before
+    assert original.amount == payout.gross_amount == Decimal("2450.00")
+
+
+@pytest.mark.m2
+def test_correction_uses_persisted_original_farmer_and_snapshot(farmer, grade):
+    from procurement.services import corrections
+
+    original, payout = _finalised_original(farmer, grade)
+    other = Farmer.objects.create(name="Bina", phone="9000000002", village="Kolar")
+    original.farmer_id = other.pk
+    original.amount = Decimal("1.00")
+    original.payout = payout
+
+    note = corrections.record_correction(
+        original, DeliveryKind.CREDIT_NOTE, Decimal("10.00"), "review"
+    )
+    stored_original = Delivery.objects.get(pk=original.pk)
+    stored_note = Delivery.objects.get(pk=note.pk)
+    assert stored_original.farmer_id == farmer.pk
+    assert stored_original.amount == Decimal("2450.00")
+    assert stored_note.original_delivery_id == stored_original.pk
+    assert stored_note.farmer_id == stored_original.farmer_id
+    assert stored_note.amount == Decimal("10.00")
+    assert not Delivery.objects.filter(original_delivery=stored_original, farmer=other).exists()
+
+
+@pytest.mark.m2
+def test_correction_rejects_stale_payout_state_without_partial_write(farmer, grade):
+    from procurement.services import corrections
+
+    original = _procurement(farmer, grade)
+    settled = Payout.objects.create(
+        farmer=farmer,
+        week_start=WEEK_START,
+        week_end=date(2026, 1, 11),
+        status=PayoutStatus.FINALISED,
+        gross_amount=Decimal("2450.00"),
+        net_amount=Decimal("2450.00"),
+    )
+    original.payout = settled  # A caller changed only this in-memory instance.
+    before = Delivery.objects.count()
+    with pytest.raises(ValidationError) as error:
+        corrections.record_correction(
+            original, DeliveryKind.DEBIT_NOTE, Decimal("10.00"), "review"
+        )
+    assert error.value.code == "original_not_settled"
+    assert Delivery.objects.count() == before
+    assert Delivery.objects.get(pk=original.pk).payout_id is None
+
+
+@pytest.mark.m2
+def test_correction_rejects_missing_original_id_without_partial_write(farmer):
+    from procurement.services import corrections
+
+    missing = Delivery(pk=999999999, farmer=farmer, kind=DeliveryKind.PROCUREMENT)
+    before = Delivery.objects.count()
+    with pytest.raises(corrections.OriginalDeliveryNotFound) as error:
+        corrections.record_correction(
+            missing, DeliveryKind.CREDIT_NOTE, Decimal("10.00"), "review"
+        )
+    assert error.value.code == "original_not_found"
+    assert Delivery.objects.count() == before
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.m2
+def test_correction_rechecks_ownership_after_farmer_lock(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from django.db import connections
+
+    from procurement.services import corrections
+
+    farmer = Farmer.objects.create(name="Asha", phone="9000000001", village="Kolar")
+    other = Farmer.objects.create(name="Bina", phone="9000000002", village="Kolar")
+    crop = Crop.objects.create(
+        name="Maize", moisture_threshold=Decimal("14.00"), max_moisture=Decimal("20.00")
+    )
+    grade = CropGrade.objects.create(crop=crop, code="A")
+    original, payout = _finalised_original(farmer, grade)
+    reached_lock = Event()
+    allow_lock = Event()
+    real_lock = corrections.lock_farmer
+
+    def pause_before_lock(farmer_id):
+        reached_lock.set()
+        if not allow_lock.wait(10):
+            raise TimeoutError("the ownership-change worker did not proceed")
+        return real_lock(farmer_id)
+
+    monkeypatch.setattr(corrections, "lock_farmer", pause_before_lock)
+
+    def create_note():
+        try:
+            corrections.record_correction(
+                original, DeliveryKind.CREDIT_NOTE, Decimal("10.00"), "review"
+            )
+        except ValidationError as error:
+            return error.code
+        finally:
+            connections.close_all()
+        return "unexpected_write"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(create_note)
+        try:
+            assert reached_lock.wait(10)
+            Delivery.objects.filter(pk=original.pk).update(farmer=other)
+        finally:
+            allow_lock.set()
+        outcome = future.result(timeout=20)
+
+    assert outcome == "original_changed"
+    assert Delivery.objects.get(pk=original.pk).farmer_id == other.pk
+    assert not Delivery.objects.filter(original_delivery_id=original.pk).exists()
+    assert Payout.objects.get(pk=payout.pk).farmer_id == farmer.pk
+
+
 # --- M1 model-level rules (pass at M1) -------------------------------------
 
 

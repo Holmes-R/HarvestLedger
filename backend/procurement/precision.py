@@ -2,8 +2,9 @@
 
 Values are supplied at a documented precision and are **rejected**, never
 silently rounded, when they carry more decimal places than allowed. Deliberate
-rounding happens only inside the calculation logic, using ``Decimal`` with
-``ROUND_HALF_UP``. Binary floating point (``float``) is never used for weights,
+rounding happens only inside the calculation logic. Derived weights and delivery
+amounts use ``Decimal`` with ``ROUND_HALF_UP``; the advance recovery cap uses
+``ROUND_DOWN`` separately. Binary floating point (``float``) is never used for weights,
 moisture, prices or money.
 
 Precision and ranges
@@ -29,14 +30,14 @@ Where excess input precision is rejected (and where it is not)
    admin. That is the M1 gate. ``save()`` does **not** call ``full_clean()``, so
    direct writes (``save()``, ``bulk_create()``, ``QuerySet.update()``, raw SQL)
    bypass it.
-2. **M2 service entry points.** Service functions call
-   :func:`validate_precision` on raw input *before* calculating or writing, then
-   perform ``Decimal`` / ``ROUND_HALF_UP`` arithmetic (see :func:`quantize`).
-   This is the authoritative enforcement, because it covers the direct-write
-   paths the model layer cannot.
-3. **M3 serializer validation.** DRF ``DecimalField`` is declared with the same
-   ``max_digits``/``decimal_places`` and ``rounding=None`` so excess precision is
-   rejected at the API boundary before it reaches services.
+2. **M2 service entry points.** Service functions use
+   :func:`validate_decimal_field` on raw input and rounded calculated results
+   before writing. It reads ``max_digits``/``decimal_places`` from model field
+   metadata without querying the database. :func:`validate_precision` remains
+   the scale-only primitive for callers that do not target a model field.
+3. **M3 serializer validation (planned).** DRF ``DecimalField`` should use the
+   same ``max_digits``/``decimal_places`` and reject excess precision before
+   data reaches services.
 
 Do not rely on ``DecimalField`` alone: it does not protect writes that skip
 ``full_clean()``.
@@ -46,6 +47,7 @@ import decimal
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.core.validators import DecimalValidator
 
 GROSS_KG_PLACES = 3
 MOISTURE_PLACES = 2
@@ -96,6 +98,33 @@ def validate_precision(value, places: int, field_name: str = "value") -> None:
             f"{field_name} must have at most {places} decimal place(s), got {found}.",
             code="too_many_decimal_places",
         )
+
+
+def validate_decimal_field(value: Decimal, model, field_name: str) -> None:
+    """Validate a service value against its destination ``DecimalField``.
+
+    Model metadata is read in memory; this function does not query the database.
+    Input scale is checked before Django's total-digit validator so the existing
+    ``too_many_decimal_places`` service error remains stable. Calculated values
+    must be passed here *after* their intentional half-up rounding.
+    """
+    field = model._meta.get_field(field_name)
+    if value is None:
+        raise ValidationError(f"{field_name} is required.", code="required")
+    validate_precision(value, field.decimal_places, field_name)
+
+    # Check whole digits first so a large exponent is rejected without ever
+    # expanding it or attempting a database write. The limit comes from the
+    # destination field, not a second set of hard-coded precision constants.
+    whole_digits = 0 if value.is_zero() else max(value.adjusted() + 1, 0)
+    max_whole_digits = field.max_digits - field.decimal_places
+    if whole_digits > max_whole_digits:
+        raise ValidationError(
+            f"{field_name} must have at most {max_whole_digits} integer digit(s).",
+            code="max_whole_digits",
+        )
+
+    DecimalValidator(field.max_digits, field.decimal_places)(value)
 
 
 def quantize(value, places: int) -> Decimal:

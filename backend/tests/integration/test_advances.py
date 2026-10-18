@@ -84,6 +84,19 @@ def test_overprecise_amount_is_rejected(farmer):
     assert Advance.objects.count() == 0
 
 
+def test_advance_that_would_overflow_outstanding_balance_is_atomic(farmer):
+    maximum = Decimal("999999999999.99")
+    first = advances.post_advance(farmer, maximum, WEEK_START)
+    with pytest.raises(ValidationError) as error:
+        advances.post_advance(farmer, Decimal("0.01"), WEEK_START)
+    assert error.value.code == "max_whole_digits"
+    farmer.refresh_from_db()
+    assert farmer.outstanding_advance == maximum
+    assert list(Advance.objects.values_list("pk", "amount")) == [
+        (first.pk, maximum)
+    ]
+
+
 def test_posting_requires_a_saved_farmer():
     with pytest.raises(ValidationError):
         advances.post_advance(None, Decimal("10.00"), WEEK_START)

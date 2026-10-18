@@ -30,6 +30,7 @@ from procurement.precision import (
     GROSS_KG_PLACES,
     MONEY_PLACES,
     quantize,
+    validate_decimal_field,
     validate_precision,
 )
 
@@ -180,6 +181,41 @@ def test_validate_precision_helper_rejects_and_accepts():
     with pytest.raises(ValidationError) as excinfo:
         validate_precision(Decimal("24.505"), MONEY_PLACES, "price_per_kg")
     assert excinfo.value.code == "too_many_decimal_places"
+
+
+@pytest.mark.parametrize(
+    ("model", "field_name", "value"),
+    [
+        (Delivery, "gross_weight_kg", "999999999.999"),
+        (PriceListEntry, "price_per_kg", "9999999999.99"),
+        (Delivery, "amount", "999999999999.99"),
+    ],
+)
+def test_service_validator_accepts_largest_representable_values(
+    model, field_name, value
+):
+    validate_decimal_field(Decimal(value), model, field_name)
+
+
+@pytest.mark.parametrize(
+    ("model", "field_name", "value", "code"),
+    [
+        (Delivery, "gross_weight_kg", "1000000000.000", "max_whole_digits"),
+        (PriceListEntry, "price_per_kg", "10000000000.00", "max_whole_digits"),
+        (Delivery, "amount", "1000000000000.00", "max_whole_digits"),
+        (Delivery, "gross_weight_kg", "1E+1000000", "max_whole_digits"),
+        (Delivery, "gross_weight_kg", "1.0001", "too_many_decimal_places"),
+        (Delivery, "gross_weight_kg", "NaN", "invalid_decimal"),
+        (Delivery, "gross_weight_kg", "Infinity", "invalid_decimal"),
+        (Delivery, "gross_weight_kg", "-Infinity", "invalid_decimal"),
+    ],
+)
+def test_service_validator_rejects_out_of_range_and_nonfinite_values(
+    model, field_name, value, code
+):
+    with pytest.raises(ValidationError) as error:
+        validate_decimal_field(Decimal(value), model, field_name)
+    assert error.value.code == code
 
 
 def test_quantize_uses_round_half_up():

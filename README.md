@@ -13,9 +13,10 @@ farmer payouts with advance recovery.
   effective-dated prices and moisture deductions, and generates weekly farmer
   payouts with advance recovery.
 
-**Current milestone: M1 (domain model, constraints, migrations, seed data and
-tests) is complete.** The M2 service/API layer is not implemented yet; see
-[section 11](#11-known-limitations) and [section 8](#8-business-rules-and-assumptions).
+**Current milestone: M2 service layer.** M1 schema and M2 services are present.
+The Part 1 validation and Part 2 correction, recovery and payout policies have
+regression coverage. HTTP endpoints (M3) and the procurement UI (M4) are
+pending; see [section 11](#11-known-limitations).
 
 ## 2. Live links
 
@@ -32,9 +33,9 @@ tests) is complete.** The M2 service/API layer is not implemented yet; see
 |---|---|
 | Backend | Django and Django REST Framework |
 | Frontend | React, TypeScript and Vite |
-| Database | PostgreSQL (target); SQLite is used for local M1 development |
+| Database | PostgreSQL for development and tests |
 | Tests | pytest, pytest-django and pytest-cov |
-| Local environment | Docker Compose (not configured yet) |
+| Local environment | PostgreSQL service; Docker Compose is not configured |
 | CI | GitHub Actions |
 | Hosting | <actual providers> |
 
@@ -53,9 +54,9 @@ Frontend → API → Services → Django ORM → PostgreSQL
 
 ## 5. Running locally
 
-Prerequisites: Python 3.11+ and Node.js (frontend, later milestones). The M1
-backend was developed against the pinned versions in
-`backend/requirements.txt` (Django 5.2.x, pytest, pytest-django, ruff).
+Prerequisites: Python 3.11+, PostgreSQL 17 (the verified local version), and
+Node.js for the frontend scaffold. Install the pinned backend
+dependencies from `backend/requirements.txt` (UTF-8).
 
 Backend (from the repository root):
 
@@ -63,29 +64,44 @@ Backend (from the repository root):
 cd backend
 python -m venv venv
 venv/Scripts/activate            # Windows; use venv/bin/activate on POSIX
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-> Note: `backend/requirements.txt` is currently saved as UTF-16 and must be
-> re-saved as UTF-8 before `pip install -r` works reliably.
+Create a **local-only** PostgreSQL role and two separate databases. For example,
+in an administrator `psql` session on `127.0.0.1`:
 
-Database, migrations and seed (SQLite for local M1 development):
+```sql
+CREATE ROLE harvestledger_local LOGIN CREATEDB;
+\password harvestledger_local
+CREATE DATABASE harvestledger_dev OWNER harvestledger_local;
+CREATE DATABASE harvestledger_test OWNER harvestledger_local;
+```
+
+Copy `backend/.env.example` to the git-ignored `backend/.env` and set its
+`PGPASSWORD` to that role's local password. The example selects
+`127.0.0.1:5432`, `harvestledger_dev` for ordinary commands and
+`harvestledger_test` for pytest. It disables SSL/channel binding **only for the
+local server**; the settings default to requiring both when those two options
+are omitted. `config.settings` reads `.env` with the declared `django-environ`
+dependency; `DATABASE_URL` is not the configured input.
+
+Before migrations or tests, verify that `PGHOST` is local and that
+`PGTESTDATABASE` differs from `PGDATABASE`. Never use the reviewer/hosted
+database for tests. From `backend/`, run:
 
 ```bash
-python manage.py migrate          # applies procurement.0001_initial
-python manage.py seed_data        # idempotent reference data
-python manage.py seed_data        # re-running adds nothing
+python manage.py check
+python manage.py migrate
+python manage.py seed_data
+python -m pytest --reuse-db
 python manage.py runserver
 ```
 
-The default database is `backend/db.sqlite3` (created by `migrate`, git-ignored).
-PostgreSQL wiring (`docker-compose.yml`, `DATABASE_URL`) is a later-milestone
-task; the `DATABASE_URL` currently in `.env` is not read by settings yet, so the
-application always uses SQLite right now.
-
-Environment variables: `.env` is git-ignored and is not yet consumed by
-`config/settings.py`. `SECRET_KEY` is the Django development key; it must be
-moved to the environment before any deployment.
+The `TEST.NAME` setting reads `PGTESTDATABASE` (or defaults to
+`test_<PGDATABASE>`). `--reuse-db` reuses that isolated test database after its
+first creation. The local role needs `CREATEDB` for a fresh pytest database.
+`SECRET_KEY` is still a development key and must move to a secret store before
+deployment.
 
 ## 5a. Deployment
 
@@ -129,18 +145,13 @@ Measure coverage with the project's configured tooling (`pytest-cov`, from
 python -m pytest --cov=procurement --cov-report=term-missing
 ```
 
-Actual status (verified on this checkout, PostgreSQL test database):
-
-- `python -m pytest --reuse-db` -> **274 passed** (147 `m2`, 127 M1).
-- `python -m pytest tests/integration/test_concurrency.py` -> **3 passed**
-  (independent PostgreSQL connections; verifies persisted balances, membership
-  and totals).
-- `python manage.py check` -> no issues; `makemigrations --check --dry-run` ->
-  no drift.
-- Coverage: **97.0%** on the M2 services layer (`procurement/services/`),
-  **95.7%** on the combined business-rules layer (services + `models.py` +
-  `precision.py` + `clock.py`), and **96.0%** on the whole `procurement` package.
-  See [COVERAGE.md](COVERAGE.md) for the full breakdown and the exact command.
+On 18 October 2026, with Python 3.12.14 and isolated local PostgreSQL 17.5,
+`python -m pytest --reuse-db -q -ra --cov=procurement --cov-report=term --cov-report=json:.venv/part2_checks/final_coverage.json`
+completed with **325 passed**, no reported skips or xfails, and 96% displayed
+whole-package coverage (1,119 statements, 50 missed). The separately executed
+Part 1 and Part 2 verification probes passed 43 and 12 cases respectively.
+The Part 2 probes are also tracked as independent regressions. See
+[COVERAGE.md](COVERAGE.md) for the measured coverage scope.
 
 Unit tests cover the business clock, numeric precision and the demo manifest.
 Integration tests cover deletion protection, admin guardrails, weekly policy,
@@ -149,8 +160,8 @@ seed idempotency, concurrency, and the M2 business-rule contracts
 
 ## 7. API overview
 
-> Not implemented yet. The endpoints below are the planned M2+ surface; no DRF
-> routes exist at M1.
+> The endpoints below are planned for M3; the M2 service layer has no DRF
+> routes yet.
 
 | Method | Endpoint | Purpose | Main error codes |
 |---|---|---|---|
@@ -175,10 +186,14 @@ validation, and the PostgreSQL check constraint. The migration converts only
 the three original named demo farmers' old placeholder numbers. Any other
 invalid stored number must be corrected before the migration can finish.
 
-The seven assignment rules are enforced both by the schema/constraints (M1) and
-by the executable M2 service layer (`procurement/services/`). The table maps
-each rule to its schema guarantee, its owning service function(s) and the tests
-that exercise it. (`services/README.md` carries the finer service-to-test map.)
+The original assignment text is not checked into this repository. The rule map
+below is the repository's summary of its procurement and payout requirements;
+it should not be treated as a quotation of the original assignment. Effective
+pricing, moisture deductions, snapshots, weekly payouts, advance recovery and
+corrections are implemented by M1 constraints and M2 services. The exact
+numeric precision, IST business clock, duplicate-date policy and supplementary
+payout grouping are additional implementation assumptions documented below and
+in `backend/procurement/services/README.md`.
 
 | Rule | Schema/constraints status (M1) | Owner (services/) | Test |
 |---|---|---|---|
@@ -196,7 +211,9 @@ that exercise it. (`services/README.md` carries the finer service-to-test map.)
 ### 8.1 Precision assumptions
 
 Defined in `backend/procurement/precision.py` and applied per field in
-`models.py`. All arithmetic uses `Decimal` with `ROUND_HALF_UP` (never float).
+`models.py`. Arithmetic uses `Decimal`, never binary floats. Delivery amounts
+and derived weights use `ROUND_HALF_UP`; the advance recovery cap uses
+`ROUND_DOWN` so the recovered cents do not exceed the exact percentage limit.
 
 | Quantity | Scale | Example |
 |---|---|---|
@@ -207,9 +224,11 @@ Defined in `backend/procurement/precision.py` and applied per field in
 | Money (amounts, balances) | 2 dp | `2450.00` |
 
 1. `DecimalField` rejects over-precise input via `full_clean()` (admin/forms);
-   `save()` does not call `full_clean()`, so the M2 service layer must validate.
-2. Money and derived weights are quantised with `ROUND_HALF_UP`; monetary
-   results are stored at 2 dp (e.g. `2.50000 x 1.01 = 2.525 -> 2.53`).
+   `save()` does not call `full_clean()`, so M2 services validate input and
+   calculated outputs against destination field capacity before writing.
+2. Delivery money and derived weights are quantised with `ROUND_HALF_UP`;
+   monetary results are stored at 2 dp (e.g. `2.50000 x 1.01 = 2.525 -> 2.53`).
+   The advance recovery cap has a separate round-down rule.
 3. `deduction_kg + net_kg == gross_weight_kg` exactly at 5 dp.
 
 ### 8.2 Weekly and correction grouping policy
@@ -222,16 +241,24 @@ inclusive, with `Payout.week_start` the Monday and `week_end` the Sunday.
 2. There is deliberately **no** unconditional `(farmer, week)` unique: once a
    week is FINALISED/PAID, late or previously unassigned records can be paid via
    a supplementary payout for the same week.
-3. Building an empty week returns no payout. Finalised payout totals and their
-   included deliveries remain frozen.
+3. Building an empty week returns `None`, creates no payout and leaves the
+   outstanding advance unchanged. This is the repository's chosen interpretation,
+   not an explicit assignment requirement for an `EMPTY_PAYOUT` error. Finalised
+   payout totals and their included deliveries remain frozen.
 4. A correction (credit/debit note) requires its original delivery to belong to
    a FINALISED or PAID payout and retains the original farmer. It is stamped with
    `accounting_date` = the IST business date it is recorded, **not** the original
    `delivered_on`; that date selects the target payout week. Credit notes add
    to payout gross; debit notes subtract from it. Each note is included once
-   without changing the original.
-5. Advance recovery is `min(outstanding_advance, 30% of gross_amount)`, rounded
-   to money precision with `ROUND_HALF_UP`, and the remainder carries forward.
+   without changing the original. The service looks up the original by primary
+   key, locks its persisted farmer and payout, then reloads and verifies the
+   original before creating the note.
+5. Advance recovery is `min(outstanding_advance, floor_to_cents(30% of
+   gross_amount))` for a positive gross. The percentage cap rounds `ROUND_DOWN`
+   to two decimal places: gross `100.05` permits at most `30.01`, yielding net
+   `70.04` when the outstanding balance is sufficient. This prevents recovery
+   from exceeding exactly 30% of gross. Any remainder carries forward; zero or
+   negative gross recovers nothing.
 6. Multiple advances to one farmer on one date are allowed; `(farmer, given_on)`
    is **not** a deduplication key (see `scenarios.ADVANCE_DEDUPLICATION_NOTE`).
 7. UNRESOLVED product decisions (intentionally deferred): intra-day cutoff,
@@ -292,12 +319,13 @@ sensitive-data exclusions and hosted log access.
 
 ## 11. Known limitations
 
-**M1 (schema, constraints, admin, seed) and M2 (business-rule service layer) are
-complete; the API and UI are not built yet.**
+**M1 schema and M2 services are implemented.** The Part 1 and Part 2 regressions
+are covered by tests. The API and procurement UI are not built yet.
 
-1. Not implemented at this milestone: the DRF API, the React frontend, and
-   production hosting/Docker wiring. No HTTP endpoint or UI is claimed here.
-   Section 7 and the `api/v1` routes remain planned-only.
+1. Not implemented at this milestone: the DRF API, the procurement workflow UI,
+   and production hosting/Docker wiring. The frontend currently has a phone
+   format form, but no procurement workflow or HTTP integration. Section 7 and
+   the `api/v1` routes remain planned-only.
 2. Deployment, hosting, live links and CI are not available yet and are left as
    placeholders earlier in this README.
 3. Concurrency is proven only against a single PostgreSQL instance with

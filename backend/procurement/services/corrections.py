@@ -26,14 +26,16 @@ from procurement.models import (
     GRADE_NOTE_KINDS,
     Delivery,
     DeliveryKind,
+    Payout,
     PayoutStatus,
 )
-from procurement.precision import MONEY_PLACES, quantize, validate_precision
+from procurement.precision import MONEY_PLACES, quantize, validate_decimal_field
 
+from .errors import OriginalDeliveryNotFound
 from .locking import lock_farmer, lock_payout
 from .validation import as_decimal
 
-__all__ = ["record_correction"]
+__all__ = ["OriginalDeliveryNotFound", "record_correction"]
 
 CORRECTION_SIGNS = {
     DeliveryKind.CREDIT_NOTE: Decimal(1),
@@ -55,7 +57,8 @@ def record_correction(
     ``clock`` (a :class:`~procurement.clock.Clock`) is injected for the business
     date; it defaults to :func:`~procurement.clock.get_clock`.
     """
-    if original_delivery is None or getattr(original_delivery, "pk", None) is None:
+    original_pk = getattr(original_delivery, "pk", None)
+    if original_pk is None:
         raise ValidationError(
             "An existing original delivery is required.", code="original_required"
         )
@@ -66,7 +69,7 @@ def record_correction(
         )
 
     value = as_decimal(magnitude, "magnitude")
-    validate_precision(value, MONEY_PLACES, "magnitude")
+    validate_decimal_field(value, Delivery, "correction_magnitude")
     if value <= 0:
         raise ValidationError(
             "Correction magnitude must be greater than zero.", code="not_positive"
@@ -77,27 +80,70 @@ def record_correction(
         )
 
     with transaction.atomic():
-        farmer = lock_farmer(original_delivery.farmer_id)
-
-        original_payout = original_delivery.payout
-        if (
-            original_payout is None
-            or original_payout.status not in _CORRECTABLE_STATUSES
-        ):
+        # The caller's object supplies only a primary key. Read ownership from
+        # PostgreSQL before taking the canonical farmer -> payout -> delivery
+        # locks. Recheck after locking: a concurrent edit may have changed the
+        # reference between this initial lookup and the locks.
+        reference = Delivery.objects.filter(pk=original_pk).values("farmer_id").first()
+        if reference is None:
+            raise OriginalDeliveryNotFound(f"Original delivery {original_pk} was not found.")
+        farmer = lock_farmer(reference["farmer_id"])
+        current = (
+            Delivery.objects.filter(pk=original_pk)
+            .values("farmer_id", "payout_id")
+            .first()
+        )
+        if current is None:
+            raise OriginalDeliveryNotFound(f"Original delivery {original_pk} was not found.")
+        if current["farmer_id"] != farmer.pk:
+            raise ValidationError(
+                "The original delivery changed while being checked.",
+                code="original_changed",
+            )
+        if current["payout_id"] is None:
             raise ValidationError(
                 "Corrections can only be recorded against a finalised or paid "
                 "delivery.",
                 code="original_not_settled",
             )
-        lock_payout(original_payout.pk)
+        try:
+            original_payout = lock_payout(current["payout_id"])
+        except Payout.DoesNotExist as exc:
+            raise ValidationError(
+                "The original payout changed while being checked.",
+                code="original_changed",
+            ) from exc
+        try:
+            original = Delivery.objects.select_for_update().get(pk=original_pk)
+        except Delivery.DoesNotExist as exc:
+            raise OriginalDeliveryNotFound(
+                f"Original delivery {original_pk} was not found."
+            ) from exc
+        if (
+            original.farmer_id != farmer.pk
+            or original.payout_id != original_payout.pk
+            or original_payout.farmer_id != farmer.pk
+        ):
+            raise ValidationError(
+                "The original delivery changed while being checked.",
+                code="original_changed",
+            )
+        if original_payout.status not in _CORRECTABLE_STATUSES:
+            raise ValidationError(
+                "Corrections can only be recorded against a finalised or paid "
+                "delivery.",
+                code="original_not_settled",
+            )
 
         sign = CORRECTION_SIGNS[kind]
+        signed_amount = quantize(value * sign, MONEY_PLACES)
+        validate_decimal_field(signed_amount, Delivery, "amount")
         return Delivery.objects.create(
             farmer=farmer,
             kind=kind,
-            original_delivery=original_delivery,
+            original_delivery=original,
             correction_magnitude=quantize(value, MONEY_PLACES),
             reason=reason,
             accounting_date=(clock or get_clock()).today(),
-            amount=quantize(value * sign, MONEY_PLACES),
+            amount=signed_amount,
         )

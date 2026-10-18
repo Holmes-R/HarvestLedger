@@ -35,6 +35,34 @@ class PriceNotFound(ServiceError):
     default_message = "No effective price was found for the requested date."
 
 
+class FarmerNotFound(ServiceError):
+    """A supplied farmer identifier does not refer to a stored farmer."""
+
+    code = "farmer_not_found"
+    default_message = "The requested farmer was not found."
+
+
+class CropNotFound(ServiceError):
+    """A supplied crop identifier does not refer to a stored crop."""
+
+    code = "crop_not_found"
+    default_message = "The requested crop was not found."
+
+
+class CropGradeNotFound(ServiceError):
+    """A supplied crop-grade identifier does not refer to a stored grade."""
+
+    code = "crop_grade_not_found"
+    default_message = "The requested crop grade was not found."
+
+
+class OriginalDeliveryNotFound(ServiceError):
+    """A supplied original-delivery ID does not refer to a stored delivery."""
+
+    code = "original_not_found"
+    default_message = "The original delivery was not found."
+
+
 class GradeNotAllowed(ServiceError):
     """The grade does not exist for the requested crop ("disallowed grade")."""
 

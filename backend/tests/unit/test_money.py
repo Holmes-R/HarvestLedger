@@ -21,11 +21,29 @@ def test_recovers_only_the_remaining_outstanding_balance():
     ) == Decimal("265.00")
 
 
-def test_cap_rounds_an_exact_half_cent_up():
-    # 0.05 * 0.30 = 0.015 -> HALF_UP -> 0.02.
+def test_cap_rounds_an_exact_half_cent_down():
+    # 0.05 * 0.30 = 0.015; 0.02 would exceed the exact 30% cap.
     assert money.advance_recovery(Decimal("0.05"), Decimal("1.00")) == Decimal(
-        "0.02"
+        "0.01"
     )
+
+
+@pytest.mark.parametrize(
+    ("gross", "expected_cap"),
+    [
+        ("0.04", "0.01"),
+        ("0.05", "0.01"),  # exact cap 0.015; 0.02 would exceed 30%
+        ("0.15", "0.04"),
+        ("0.35", "0.10"),
+        ("100.05", "30.01"),
+        ("100.10", "30.03"),
+    ],
+)
+def test_positive_cap_never_exceeds_exact_thirty_percent(gross, expected_cap):
+    gross = Decimal(gross)
+    cap = money.advance_recovery_cap(gross)
+    assert cap == Decimal(expected_cap)
+    assert cap <= gross * Decimal("0.30")
 
 
 def test_no_recovery_without_outstanding():

@@ -17,6 +17,10 @@ All domain (business-rule) errors derive from `ServiceError` and carry a stable
 | Exception (`procurement.services.errors`) | `.code`                  | Raised when |
 | --- | --- | --- |
 | `ServiceError` | `service_error` | base class; code overridable per instance |
+| `FarmerNotFound` | `farmer_not_found` | a supplied farmer ID is not stored |
+| `CropNotFound` | `crop_not_found` | a supplied crop ID is not stored |
+| `CropGradeNotFound` | `crop_grade_not_found` | a supplied crop-grade ID is not stored |
+| `OriginalDeliveryNotFound` | `original_not_found` | a supplied original-delivery ID is not stored |
 | `PriceNotFound` | `price_not_found` | no price entry is effective on/before the date |
 | `GradeNotAllowed` | `grade_not_allowed` | grade does not exist for the crop (disallowed grade) |
 | `PriceAlreadyExists` | `price_already_exists` | `(grade, effective_from)` is already priced |
@@ -33,8 +37,10 @@ Input/field validation uses Django's `ValidationError` with an explicit
 `invalid_kind`, `not_positive`, `reason_required`, `original_required`,
 `original_not_settled`, `farmer_required`, `crop_grade_required`, `required`,
 `invalid_date`, `future_delivery_date`, `not_editable`, `invalid_moisture_bounds`,
-`invalid_decimal`, `too_many_decimal_places` (see `validation.py` /
-`precision.py`).
+`invalid_decimal`, `too_many_decimal_places`, `max_whole_digits`, `max_digits`,
+`original_changed`, `original_not_settled`
+(see `validation.py` / `precision.py`). A missing/unsaved reference is a
+`ValidationError`; a supplied ID absent from the database is a `ServiceError`.
 
 ## Business clock (injection)
 
@@ -61,17 +67,22 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 - `calculate_breakdown(gross_weight_kg, moisture_percent, price_per_kg, threshold, max_moisture) -> Breakdown`
   - Pure function (no DB). `Breakdown` is a frozen dataclass with
     `deduction_percent` (2dp), `deduction_kg` / `net_kg` (5dp), `amount` (2dp).
-  - Raises `ValidationError` for non-positive / over-precise inputs and invalid
-    moisture bounds; raises `MoistureExceedsMaximum` above `max_moisture`.
+  - Raises `ValidationError` for non-positive, over-precise or over-capacity
+    inputs and calculated outputs (including the rounded final amount), and for
+    invalid moisture bounds; raises `MoistureExceedsMaximum` above
+    `max_moisture`. Field limits come from Django model metadata without a
+    database query.
 - `preview_delivery(*, farmer, crop_grade, delivered_on, gross_weight_kg, moisture_percent, clock=None) -> DeliveryPreview`
   - Validates inputs, rejects a future `delivered_on` against the injected clock
     (`future_delivery_date`), resolves the price and returns the full breakdown.
+    Rejects any result that cannot fit the persisted delivery fields.
     **Persists nothing.**
 - `record_delivery(*, farmer, crop_grade, delivered_on, gross_weight_kg, moisture_percent, clock=None) -> Delivery`
   - Re-validates and re-calculates authoritatively (never trusts a preview),
     freezes the snapshot (`threshold_used`, breakdown, `applied_price`,
     `price_list_entry` FK) and writes atomically under the farmer lock;
-    `accounting_date == delivered_on` for `PROCUREMENT`.
+    `accounting_date == delivered_on` for `PROCUREMENT`. Missing farmer input
+    raises `farmer_required`; a stale farmer ID raises `FarmerNotFound`.
 - `edit_delivery(delivery, *, delivered_on=None, crop_grade=None, gross_weight_kg=None, moisture_percent=None, clock=None) -> Delivery`
   - Recalculates an existing `PROCUREMENT` delivery. Raises `PayoutStateError`
     for a delivery in a FINALISED/PAID payout. The frozen price is preserved
@@ -92,6 +103,9 @@ instants from `django.utils.timezone.now()` -- never the business clock.
     `ValidationError`, and a duplicate `(grade, effective_from)` -- whether
     caught up front or by the DB unique constraint -- with `PriceAlreadyExists`.
   - There is intentionally **no update/delete** service function.
+  - Missing crop/grade input raises `ValidationError`; a stale crop or grade ID
+    raises `CropNotFound`/`CropGradeNotFound`. A stored grade belonging to a
+    different crop raises `GradeNotAllowed`.
 
 ### `procurement.services.advances`
 
@@ -114,15 +128,20 @@ instants from `django.utils.timezone.now()` -- never the business clock.
     **stored** `amount` (no re-pricing). At most one DRAFT per farmer/week;
     repeated calls reuse it (no duplicates); membership changes and the recomputed
     DRAFT totals happen together under the farmer lock. Returns `None` for an
-    empty week; raises `PayoutStateError` when the week is settled with nothing
-    new to add. A late record after finalisation yields a supplementary DRAFT.
+    empty week; this is a chosen repository policy, not an explicit assignment
+    requirement for an `EMPTY_PAYOUT` error. It creates no payout and leaves
+    balances unchanged. Raises `PayoutStateError` when the week is settled with
+    nothing new to add. A late record yields a supplementary DRAFT.
     Generating/refreshing a DRAFT never changes `outstanding_advance`.
 - `finalise_payout(payout) -> Payout`
   - DRAFT -> FINALISED exactly once. Atomic; locks farmer -> payout ->
     deliveries; re-validates that each included delivery belongs to the payout's
     farmer; recomputes `gross_amount` from the stored snapshots; recovers
-    `min(outstanding_advance, round(0.30 * gross, 2))` (ROUND_HALF_UP) from the
-    **locked** balance; stores `advance_deduction`/`net_amount` and
+    `min(outstanding_advance, floor_to_cents(0.30 * gross))` from the
+    **locked** balance. The positive cap uses `Decimal`/`ROUND_DOWN` at two
+    decimal places, since half-up could recover more than exactly 30% (`100.05`
+    gross permits `30.01`, not `30.02`). Delivery amounts still use half-up.
+    Stores `advance_deduction`/`net_amount` and
     `finalised_at`; reduces `outstanding_advance` exactly once. Raises
     `PayoutStateError` for a non-DRAFT payout *before any write*, so a repeated
     or concurrent finalisation never recovers again.
@@ -138,14 +157,18 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 
 - `record_correction(original_delivery, kind, magnitude, reason, *, clock=None) -> Delivery`
   - CREDIT_NOTE (+) / DEBIT_NOTE (-) against a FINALISED/PAID original. Requires a
-    saved original (`original_required`), a valid note kind (`invalid_kind`), a
+    saved original (`original_required`; absent stored ID raises
+    `OriginalDeliveryNotFound`), a valid note kind (`invalid_kind`), a
     positive in-precision magnitude (`not_positive`/`too_precise`) and a non-blank
-    reason (`reason_required`). Inherits the original's farmer (same farmer by
-    construction), never mutates the original or its finalised statement, and
+    reason (`reason_required`). The supplied object contributes only its primary
+    key. The service reads persisted ownership, locks farmer -> payout -> original
+    delivery, then reloads and checks ownership, membership and settled status.
+    Stale or altered in-memory fields cannot change the note's farmer or basis.
+    It never mutates the original or its finalised statement, and
     stamps `accounting_date` with the injected/`get_clock()` IST business date,
     which selects the target payout week. The signed `amount` flows into exactly
     one payout (single `payout` FK); several notes may reference the same
-    original. Atomic and farmer-first locked (`lock_farmer` -> `lock_payout`).
+    original. The lock order is farmer -> payout -> delivery.
 
 ### `procurement.services.ledger`
 
@@ -190,7 +213,7 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 | `...::test_gross_equals_deduction_plus_net` (x3) | `delivery.calculate_breakdown` |
 | `tests/unit/test_money.py::test_recovers_thirty_percent_when_outstanding_is_larger` | `money.advance_recovery` |
 | `...::test_recovers_only_the_remaining_outstanding_balance` | `money.advance_recovery` |
-| `...::test_cap_rounds_an_exact_half_cent_up` | `money.advance_recovery_cap` |
+| `...::test_cap_rounds_an_exact_half_cent_down` | `money.advance_recovery_cap` |
 | `...::test_no_recovery_without_outstanding` | `money.advance_recovery` |
 | `...::test_no_recovery_on_zero_or_negative_gross` (x2) | `money.advance_recovery` |
 | `tests/integration/test_prices.py::test_exact_effective_date_wins` | `pricing.resolve_price` |
@@ -240,7 +263,7 @@ instants from `django.utils.timezone.now()` -- never the business clock.
 | `...::test_draft_payout_does_not_reduce_outstanding` | `payouts.build_weekly_payout` |
 | `...::test_recovery_cap_and_outstanding_carries_across_weeks` | `payouts.finalise_payout` / `money.advance_recovery` |
 | `...::test_large_outstanding_advance_carries_beyond_two_weeks` | `payouts.finalise_payout` / `money.advance_recovery` |
-| `...::test_recovery_cap_rounds_an_exact_half_cent_up` | `payouts.finalise_payout` / `money.advance_recovery_cap` |
+| `...::test_recovery_cap_rounds_an_exact_half_cent_down` | `payouts.finalise_payout` / `money.advance_recovery_cap` |
 | `...::test_finalisation_changes_balance_exactly_once` | `payouts.finalise_payout` |
 | `...::test_finalised_payout_is_immutable` | `payouts.finalise_payout` (`PayoutStateError`) |
 | `...::test_empty_week_creates_no_payout` | `payouts.build_weekly_payout` |

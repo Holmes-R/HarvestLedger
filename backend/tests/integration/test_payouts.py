@@ -32,6 +32,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from procurement.models import (
@@ -123,6 +124,55 @@ def test_delivery_membership_is_a_single_foreign_key(farmer, grade):
     assert delivery.payout_id == first.pk
     assert set(first.deliveries.values_list("pk", flat=True)) == {delivery.pk}
     assert not second.deliveries.filter(pk=delivery.pk).exists()
+
+
+@pytest.mark.m2
+def test_payout_aggregate_overflow_does_not_assign_deliveries(farmer, grade):
+    from procurement.services import payouts
+
+    first = _model_delivery(
+        farmer, grade, WEEK_1_START, amount=Decimal("999999999999.99")
+    )
+    second = _model_delivery(
+        farmer, grade, WEEK_1_START, amount=Decimal("0.01")
+    )
+
+    with pytest.raises(ValidationError) as error:
+        payouts.build_weekly_payout(farmer, WEEK_1_START)
+    assert error.value.code == "max_whole_digits"
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.payout_id is None
+    assert second.payout_id is None
+    assert Payout.objects.count() == 0
+
+
+@pytest.mark.m2
+def test_finalisation_rejects_overflowing_member_sum_without_changes(farmer, grade):
+    from procurement.services import payouts
+
+    draft = Payout.objects.create(
+        farmer=farmer, week_start=WEEK_1_START, week_end=WEEK_1_END
+    )
+    first = _model_delivery(
+        farmer, grade, WEEK_1_START, amount=Decimal("999999999999.99")
+    )
+    second = _model_delivery(
+        farmer, grade, WEEK_1_START, amount=Decimal("0.01")
+    )
+    Delivery.objects.filter(pk__in=[first.pk, second.pk]).update(payout=draft)
+
+    with pytest.raises(ValidationError) as error:
+        payouts.finalise_payout(draft)
+    assert error.value.code == "max_whole_digits"
+    draft.refresh_from_db()
+    farmer.refresh_from_db()
+    assert draft.status == PayoutStatus.DRAFT
+    assert draft.gross_amount == Decimal("0.00")
+    assert draft.advance_deduction == Decimal("0.00")
+    assert draft.net_amount == Decimal("0.00")
+    assert farmer.outstanding_advance == Decimal("0.00")
+    assert set(draft.deliveries.values_list("pk", flat=True)) == {first.pk, second.pk}
 
 
 # --- M2 rule tests ----------------------------------------------------------
@@ -217,7 +267,7 @@ def test_large_outstanding_advance_carries_beyond_two_weeks(farmer, grade):
 
 
 @pytest.mark.m2
-def test_recovery_cap_rounds_an_exact_half_cent_up(farmer, grade):
+def test_recovery_cap_rounds_an_exact_half_cent_down(farmer, grade):
     from procurement.services import advances, payouts
 
     advances.post_advance(farmer, Decimal("1.00"), WEEK_1_START)
@@ -229,9 +279,9 @@ def test_recovery_cap_rounds_an_exact_half_cent_up(farmer, grade):
     payout.refresh_from_db()
     farmer.refresh_from_db()
     assert payout.gross_amount == Decimal("0.05")
-    assert payout.advance_deduction == Decimal("0.02")
-    assert payout.net_amount == Decimal("0.03")
-    assert farmer.outstanding_advance == Decimal("0.98")
+    assert payout.advance_deduction == Decimal("0.01")
+    assert payout.net_amount == Decimal("0.04")
+    assert farmer.outstanding_advance == Decimal("0.99")
 
 
 @pytest.mark.m2
@@ -287,6 +337,19 @@ def test_empty_week_creates_no_payout(farmer):
 
     assert payouts.build_weekly_payout(farmer, WEEK_1_START) is None
     assert Payout.objects.filter(farmer=farmer).count() == 0
+
+
+@pytest.mark.m2
+def test_empty_week_returns_none_without_changing_advance(farmer):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("50.00"), WEEK_1_START)
+    farmer.refresh_from_db()
+    before = farmer.outstanding_advance
+    assert payouts.build_weekly_payout(farmer, WEEK_1_START) is None
+    assert Payout.objects.filter(farmer=farmer).count() == 0
+    farmer.refresh_from_db()
+    assert farmer.outstanding_advance == before == Decimal("50.00")
 
 
 @pytest.mark.m2
@@ -544,10 +607,10 @@ def test_recovery_above_the_cap_is_capped_and_carries_the_remainder(farmer, grad
     ("gross", "expected_recovery"),
     [
         ("0.04", "0.01"),  # 0.012 -> 0.01 (down)
-        ("0.05", "0.02"),  # 0.015 -> 0.02 (exact half cent, HALF_UP)
-        ("0.15", "0.05"),  # 0.045 -> 0.05
+        ("0.05", "0.01"),  # 0.015 -> 0.01; cap cannot exceed 30%
+        ("0.15", "0.04"),  # 0.045 -> 0.04
         ("0.34", "0.10"),  # 0.102 -> 0.10 (down)
-        ("0.35", "0.11"),  # 0.105 -> 0.11 (exact half cent, HALF_UP)
+        ("0.35", "0.10"),  # 0.105 -> 0.10
         ("2450.00", "735.00"),
     ],
 )
@@ -566,6 +629,23 @@ def test_recovery_rounding_boundaries(farmer, grade, gross, expected_recovery):
     assert payout.advance_deduction == Decimal(expected_recovery)
     assert payout.net_amount == payout.gross_amount - payout.advance_deduction
     assert farmer.outstanding_advance == Decimal("1000.00") - Decimal(expected_recovery)
+
+
+@pytest.mark.m2
+def test_thirty_percent_cap_rounds_down_without_changing_delivery_amount(farmer, grade):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("100.00"), WEEK_1_START)
+    stored = _model_delivery(farmer, grade, WEEK_1_START, amount=Decimal("100.05"))
+    payout = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    payouts.finalise_payout(payout)
+    payout.refresh_from_db()
+    stored.refresh_from_db()
+    farmer.refresh_from_db()
+    assert stored.amount == payout.gross_amount == Decimal("100.05")
+    assert payout.advance_deduction == Decimal("30.01")
+    assert payout.net_amount == Decimal("70.04")
+    assert farmer.outstanding_advance == Decimal("69.99")
 
 
 @pytest.mark.m2
@@ -693,6 +773,42 @@ def test_finalisation_rolls_back_every_write_on_failure(farmer, grade, monkeypat
     assert fresh.advance_deduction == Decimal("0.00")
     farmer.refresh_from_db()
     assert farmer.outstanding_advance == Decimal("1000.00")
+
+
+@pytest.mark.m2
+def test_finalisation_rolls_back_after_balance_save(farmer, grade, monkeypatch):
+    from procurement.services import advances, payouts
+
+    advances.post_advance(farmer, Decimal("100.00"), WEEK_1_START)
+    first = _model_delivery(farmer, grade, WEEK_1_START, amount=Decimal("100.05"))
+    second = _model_delivery(farmer, grade, WEEK_1_END, amount=Decimal("10.00"))
+    draft = payouts.build_weekly_payout(farmer, WEEK_1_START)
+    frozen_members = set(draft.deliveries.values_list("pk", flat=True))
+    assert frozen_members == {first.pk, second.pk}
+    assert draft.gross_amount == draft.net_amount == Decimal("110.05")
+
+    original_save = Farmer.save
+
+    def save_then_fail(self, *args, **kwargs):
+        original_save(self, *args, **kwargs)
+        raise RuntimeError("failure after farmer balance write")
+
+    monkeypatch.setattr(Farmer, "save", save_then_fail)
+    with pytest.raises(RuntimeError, match="after farmer balance write"):
+        payouts.finalise_payout(draft)
+
+    draft.refresh_from_db()
+    farmer.refresh_from_db()
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert draft.status == PayoutStatus.DRAFT
+    assert draft.finalised_at is None
+    assert (draft.gross_amount, draft.advance_deduction, draft.net_amount) == (
+        Decimal("110.05"), Decimal("0.00"), Decimal("110.05")
+    )
+    assert farmer.outstanding_advance == Decimal("100.00")
+    assert {first.payout_id, second.payout_id} == {draft.pk}
+    assert set(draft.deliveries.values_list("pk", flat=True)) == frozen_members
 
 
 # --- Settlement (mark paid) ------------------------------------------------

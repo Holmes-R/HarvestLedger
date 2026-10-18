@@ -41,6 +41,7 @@ from django.utils import timezone
 
 from procurement.clock import week_bounds
 from procurement.models import Delivery, Farmer, Payout, PayoutStatus
+from procurement.precision import validate_decimal_field
 
 from .errors import PayoutStateError
 from .locking import lock_deliveries, lock_farmer, lock_payout
@@ -60,6 +61,8 @@ _SETTLED_STATUSES = (PayoutStatus.FINALISED, PayoutStatus.PAID)
 def _refresh_totals(payout: Payout) -> Payout:
     """Recompute a DRAFT payout's totals from its current membership."""
     gross = quantize_money(sum((d.amount for d in payout.deliveries.all()), ZERO))
+    validate_decimal_field(gross, Payout, "gross_amount")
+    validate_decimal_field(gross, Payout, "net_amount")
     # A draft never reduces the balance; net tracks gross until finalised.
     if payout.gross_amount != gross or payout.net_amount != gross:
         payout.gross_amount = gross
@@ -132,7 +135,7 @@ def finalise_payout(payout: Payout) -> Payout:
     canonical order (farmer -> payout -> deliveries by pk); the membership is
     re-validated (every included delivery belongs to the payout's farmer) and the
     totals are recomputed from the stored delivery snapshots. The recovery is the
-    documented ``min(outstanding_advance, 30% of gross_amount)`` (ROUND_HALF_UP)
+    documented ``min(outstanding_advance, floor_to_cents(30% of gross_amount))``
     taken from the *locked* balance, and it reduces ``outstanding_advance``
     exactly once.
 
@@ -161,11 +164,17 @@ def finalise_payout(payout: Payout) -> Payout:
                 )
 
         gross = quantize_money(sum((d.amount for d in deliveries), ZERO))
+        validate_decimal_field(gross, Payout, "gross_amount")
         deduction = advance_recovery(gross, farmer.outstanding_advance)
+        validate_decimal_field(deduction, Payout, "advance_deduction")
+        net = quantize_money(gross - deduction)
+        validate_decimal_field(net, Payout, "net_amount")
+        new_outstanding = quantize_money(farmer.outstanding_advance - deduction)
+        validate_decimal_field(new_outstanding, Farmer, "outstanding_advance")
 
         locked.gross_amount = gross
         locked.advance_deduction = deduction
-        locked.net_amount = quantize_money(gross - deduction)
+        locked.net_amount = net
         locked.status = PayoutStatus.FINALISED
         locked.finalised_at = timezone.now()
         locked.paid_at = None
@@ -180,9 +189,7 @@ def finalise_payout(payout: Payout) -> Payout:
             ]
         )
 
-        farmer.outstanding_advance = quantize_money(
-            farmer.outstanding_advance - deduction
-        )
+        farmer.outstanding_advance = new_outstanding
         farmer.save(update_fields=["outstanding_advance"])
 
     payout.refresh_from_db()

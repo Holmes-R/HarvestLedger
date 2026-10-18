@@ -88,9 +88,12 @@ DATABASES = {
         "HOST": os.environ["PGHOST"],
         "PORT": os.environ.get("PGPORT", "5432"),
         "OPTIONS": {
-            "sslmode": "require",
-            "channel_binding": "require",
+            "sslmode": os.environ.get("PGSSLMODE", "require"),
+            "channel_binding": os.environ.get("PGCHANNELBINDING", "require"),
             "connect_timeout": 10,
+        },
+        "TEST": {
+            "NAME": os.environ.get("PGTESTDATABASE", f"test_{os.environ['PGDATABASE']}")
         },
         "CONN_MAX_AGE": 0,
         "DISABLE_SERVER_SIDE_CURSORS": True,

@@ -1,8 +1,9 @@
 """Domain models for produce procurement and payouts.
 
 Numeric precision follows :mod:`procurement.precision`: gross kg 3 dp, moisture
-2 dp, derived kg 5 dp, price/money 2 dp, monetary maths with ``Decimal`` and
-``ROUND_HALF_UP``. ``DecimalField`` rejects excess input precision through
+2 dp, derived kg 5 dp, price/money 2 dp. Delivery monetary amounts use
+``Decimal``/``ROUND_HALF_UP``; the advance recovery cap rounds down to cents so
+it cannot exceed the exact 30% limit. ``DecimalField`` rejects excess input precision through
 ``full_clean()`` (ModelForms/admin), but ``save()`` does **not** call
 ``full_clean()``; see that module for the full M1/M2/M3 enforcement contract.
 """

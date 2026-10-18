@@ -21,6 +21,7 @@ import pytest
 from django.core.exceptions import ValidationError
 
 from procurement.models import Crop, CropGrade, Farmer, PriceListEntry
+from procurement.services.errors import ServiceError
 
 pytestmark = pytest.mark.m2
 
@@ -177,6 +178,49 @@ def test_create_price_entry_rejects_invalid_rates(grade):
     with pytest.raises(ValidationError):
         pricing.create_price_entry(grade.crop, "A", "24.555", date(2026, 1, 1))
     assert not PriceListEntry.objects.exists()
+
+
+def test_create_price_entry_requires_a_crop(grade):
+    pricing = _pricing()
+    try:
+        with pytest.raises(ValidationError) as error:
+            pricing.create_price_entry(None, grade, "1.00", date(2026, 1, 1))
+    finally:
+        assert PriceListEntry.objects.count() == 0
+    assert error.value.code == "crop_required"
+
+
+def test_create_price_entry_distinguishes_missing_crop_and_grade_records(grade):
+    pricing = _pricing()
+    missing_crop = Crop(
+        pk=99999999,
+        name="Missing",
+        moisture_threshold=Decimal("14.00"),
+        max_moisture=Decimal("20.00"),
+    )
+    with pytest.raises(ServiceError) as crop_error:
+        pricing.create_price_entry(missing_crop, grade, "1.00", date(2026, 1, 1))
+    assert crop_error.value.code == "crop_not_found"
+
+    missing_grade = CropGrade(pk=99999999, crop=grade.crop, code="B")
+    with pytest.raises(ServiceError) as grade_error:
+        pricing.create_price_entry(
+            grade.crop, missing_grade, "1.00", date(2026, 1, 1)
+        )
+    assert grade_error.value.code == "crop_grade_not_found"
+    assert PriceListEntry.objects.count() == 0
+
+
+def test_create_price_entry_rejects_rate_exceeding_field_capacity(grade):
+    pricing = _pricing()
+    try:
+        with pytest.raises(ValidationError) as error:
+            pricing.create_price_entry(
+                grade.crop, grade, "10000000000.00", date(2026, 1, 1)
+            )
+    finally:
+        assert PriceListEntry.objects.count() == 0
+    assert error.value.code == "max_whole_digits"
 
 
 def test_create_price_entry_rejects_disallowed_grade_code(grade):

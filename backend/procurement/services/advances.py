@@ -32,7 +32,7 @@ from django.db import transaction
 from django.db.models import Sum
 
 from procurement.models import Advance, Farmer, Payout, PayoutStatus
-from procurement.precision import MONEY_PLACES, validate_precision
+from procurement.precision import validate_decimal_field
 
 from .errors import AdvanceReconciliationError
 from .locking import lock_farmer
@@ -60,7 +60,7 @@ def post_advance(farmer: Farmer, amount, given_on: date) -> Advance:
     if farmer is None or getattr(farmer, "pk", None) is None:
         raise ValidationError("A saved farmer is required.", code="farmer_required")
     value = as_decimal(amount, "amount")
-    validate_precision(value, MONEY_PLACES, "amount")
+    validate_decimal_field(value, Advance, "amount")
     if value <= 0:
         raise ValidationError(
             "Advance amount must be greater than zero.", code="not_positive"
@@ -70,12 +70,12 @@ def post_advance(farmer: Farmer, amount, given_on: date) -> Advance:
 
     with transaction.atomic():
         locked = lock_farmer(farmer.pk)
+        new_outstanding = quantize_money(locked.outstanding_advance + value)
+        validate_decimal_field(new_outstanding, Farmer, "outstanding_advance")
         advance = Advance.objects.create(
             farmer=farmer, amount=quantize_money(value), given_on=given_on
         )
-        locked.outstanding_advance = quantize_money(
-            locked.outstanding_advance + advance.amount
-        )
+        locked.outstanding_advance = new_outstanding
         locked.save(update_fields=["outstanding_advance"])
     return advance
 
