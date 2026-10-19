@@ -652,9 +652,9 @@ class DeliveryDetailView(GenericAPIView):
         description=(
             "Re-runs the calculation from the raw measurements inside the lock. "
             "Only ``delivered_on``, ``crop_grade``, ``gross_weight_kg`` and "
-            "``moisture_percent`` are editable; a delivery attached to a "
-            "finalised/paid payout, or a correction note, is not editable "
-            "(``409 not_editable``)."
+            "``moisture_percent`` are editable. A delivery in a finalised or paid "
+            "payout is immutable (``409 payout_state_error``); a correction note "
+            "is not editable (``409 not_editable``)."
         ),
         parameters=REVIEW_CLOCK_HEADERS,
         request=DeliveryEditSerializer,

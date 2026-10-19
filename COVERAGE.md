@@ -7,7 +7,9 @@ database. From `backend/`:
 venv/Scripts/python.exe -m pytest --reuse-db -q -ra --cov=procurement --cov-report=term --cov-report=json:coverage.json
 ```
 
-Result: **514 passed**, exit code 0, with no reported skips or xfails.
+Result: **527 passed** (325 M1+M2 regression + 202 API), exit code 0, with no
+reported skips or xfails. The API figure includes the 13-test API01–API12
+acceptance matrix (`tests/api/test_acceptance_matrix.py`).
 
 - Whole `procurement` package: **2,191 statements, 97 missed**, **96%**.
 - `procurement.services` (business rules): **627 statements, 26 missed**,

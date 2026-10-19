@@ -130,12 +130,21 @@ Run everything (M1 regression + M2 business rules):
 python -m pytest
 ```
 
-Run only the M2 business-rule tests (marker `m2`). The marker is a selection
-convenience; there is no `xfail`/`skip` anywhere, so a failing rule test fails
-the build rather than being hidden.
+Run only the M2 business-rule tests (marker `m2`), or only the M3 HTTP API tests
+(marker `m3`). The markers are a selection convenience; there is no
+`xfail`/`skip` anywhere, so a failing rule test fails the build rather than being
+hidden.
 
 ```bash
 python -m pytest -m m2
+python -m pytest -m m3
+```
+
+Run just the API suite (real DRF request/response traffic against an isolated
+PostgreSQL database, including the API01–API12 acceptance matrix):
+
+```bash
+python -m pytest tests/api
 ```
 
 Measure coverage with the project's configured tooling (`pytest-cov`, from
@@ -145,18 +154,20 @@ Measure coverage with the project's configured tooling (`pytest-cov`, from
 python -m pytest --cov=procurement --cov-report=term-missing
 ```
 
-On 18 October 2026, with Python 3.12.14 and isolated local PostgreSQL 17.5,
-`python -m pytest --reuse-db -q -ra --cov=procurement --cov-report=term --cov-report=json:.venv/part2_checks/final_coverage.json`
-completed with **325 passed**, no reported skips or xfails, and 96% displayed
-whole-package coverage (1,119 statements, 50 missed). The separately executed
-Part 1 and Part 2 verification probes passed 43 and 12 cases respectively.
-The Part 2 probes are also tracked as independent regressions. See
-[COVERAGE.md](COVERAGE.md) for the measured coverage scope.
+On 19 October 2026, with Python 3.11.9 and an isolated PostgreSQL test database,
+`python -m pytest --reuse-db -q -ra --cov=procurement --cov-report=term --cov-report=json:coverage.json`
+completed with **527 passed** (325 unit+integration, 202 API), no reported skips
+or xfails, and 96% displayed whole-package coverage (2,191 statements, 97
+missed). See [COVERAGE.md](COVERAGE.md) for the measured coverage scope.
 
 Unit tests cover the business clock, numeric precision and the demo manifest.
 Integration tests cover deletion protection, admin guardrails, weekly policy,
 seed idempotency, concurrency, and the M2 business-rule contracts
-(prices, payouts, corrections, delivery maths, advances, ledger).
+(prices, payouts, corrections, delivery maths, advances, ledger). The API suite
+drives the real router, serializers, middleware and M2 services over HTTP; its
+`tests/api/test_acceptance_matrix.py` encodes the twelve acceptance cases
+(API01–API12) one-to-one. The rule-to-service-to-test map for the API lives in
+[`backend/procurement/api/README.md`](backend/procurement/api/README.md).
 
 ## 7. API overview
 
@@ -169,6 +180,14 @@ references) is validated by DRF serializers; every business rule stays in
 All responses use JSON. Money, weights and percentages are rendered as **decimal
 strings** (never JSON floats) at the model field's scale —
 `COERCE_DECIMAL_TO_STRING = True`.
+
+**Authentication and permissions.** The API is explicitly **unauthenticated** for
+this milestone: every endpoint sets `AllowAny` and there is no token, session or
+user model, because the assignment does not specify identity or access control.
+Write safety comes from the strict write contract (server-computed fields are
+refused), not from a caller identity. This is a deliberate, documented scope
+decision — the one exception is the demo-only reviewer-clock aid (§10.1), which is
+off by default and gated by a shared key.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -381,6 +400,11 @@ diverging per endpoint. Regenerate and validate from `backend/`:
 venv/Scripts/python.exe manage.py spectacular --validate --file schema.yaml
 ```
 
+**Rule-to-service-to-test map.** Each API operation, the M2 service it delegates
+to, and the tests that pin it are listed in
+[`backend/procurement/api/README.md`](backend/procurement/api/README.md), which
+also carries the API01–API12 acceptance matrix.
+
 ## 8. Business rules and assumptions
 
 Farmer phone numbers must be Indian mobile numbers: 10 ASCII digits starting
@@ -584,28 +608,33 @@ is not available.
 
 ## 11. Known limitations
 
-**M1 schema and M2 services are implemented.** The Part 1 and Part 2 regressions
-are covered by tests. The API and procurement UI are not built yet.
+**M1 schema, M2 services and the M3 HTTP API are implemented and covered by
+tests** (527 passing; see [COVERAGE.md](COVERAGE.md)). The procurement workflow
+UI is not built yet.
 
-1. Not implemented at this milestone: the DRF API, the procurement workflow UI,
-   and production hosting/Docker wiring. The frontend currently has a phone
-   format form, but no procurement workflow or HTTP integration. Section 7 and
-   the `api/v1` routes remain planned-only.
-2. Deployment, hosting, live links and CI are not available yet and are left as
+1. The **API is unauthenticated** by design (every route is `AllowAny`; no user
+   model). It must be placed behind authentication/authorisation before it is
+   exposed beyond a demo. The reviewer-clock aid is off by default and is the
+   only keyed surface.
+2. Not implemented at this milestone: the procurement workflow UI and production
+   hosting/Docker wiring. The frontend currently has a phone-format form only,
+   with no HTTP integration against the API.
+3. Deployment, hosting, live links and CI are not available yet and are left as
    placeholders earlier in this README.
-3. Concurrency is proven only against a single PostgreSQL instance with
+4. Concurrency is proven only against a single PostgreSQL instance with
    `select_for_update()`; there is no distributed-lock layer for a future
-   multi-database topology (not required by the assignment).
-4. The reviewer database `HarvestDB` has not been migrated to
+   multi-database topology (not required by the assignment). The concurrency
+   tests are the only place the suite relies on real row locking.
+5. The reviewer database `HarvestDB` has not been migrated to
    `0002_farmer_indian_mobile` (historical rows are preserved); a database whose
    `phone` values predate the Indian-mobile rule will reject that migration until
    the data is corrected.
-5. Unresolved product decisions listed in `clock.py` (intra-day cutoff,
+6. Unresolved product decisions listed in `clock.py` (intra-day cutoff,
    corrections against PAID weeks, multiple supplementaries per farmer/week,
    external-date IST guarantee, back-dating limits) remain intentionally
    deferred rather than invented.
-6. `requirements.txt` is UTF-8; if a tool rewrites it as UTF-16, re-save it
-   before `pip install -r`.
+7. `requirements.txt` is UTF-16 LE (with BOM); edit it with an editor that
+   preserves that encoding, or re-save it as UTF-16 before `pip install -r`.
 
 ## 12. AI and third-party usage
 

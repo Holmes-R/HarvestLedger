@@ -452,3 +452,51 @@ Produced:
 - README §7 — added the **OpenAPI schema** subsection and corrected the ledger
   endpoint description. `COVERAGE.md` refreshed (514 passed).
 
+## Entry 13 — Verify the API against the acceptance cases
+
+> Verify M3 through real DRF request/response tests against the isolated
+> PostgreSQL test database, covering the acceptance cases API01–API12 (valid
+> requests, missing/wrong input, unknown resources, protected-field writes,
+> duplicates and finalised edits, preview immutability, pagination/filtering,
+> reviewer-clock rejection, concurrent clocks, unexpected failure with a
+> correlated log and rollback, mark-paid-before-finalisation, and snapshot
+> preservation). Run the full M1+M2 regression, the API suite, Django system
+> checks, migration drift, lint, OpenAPI validation and coverage. Update the
+> README, the API rule-to-service-to-test mapping and PROMPTS.md, and report the
+> commands, results, acceptance matrix, remaining defects, M3→M4 readiness and a
+> set of proposed logical commits. Do not commit or push.
+
+Produced:
+
+- `tests/api/test_acceptance_matrix.py` (new, 13 tests, marker `m3`) — the
+  API01–API12 acceptance matrix driven through the real router, serializers,
+  views, middleware, M2 services and isolated PostgreSQL database. The only
+  injection is a deliberate view-boundary malfunction (`monkeypatch` on
+  `procurement.api.views.finalise_payout`) used to prove the API10 generic-500
+  path, its `request.failed` log payload and the financial rollback.
+- `procurement/api/health` was already a DRF `@api_view(["GET"])` (from Entry 12),
+  so the acceptance run needed no source change there.
+- Defects found and fixed while writing the matrix:
+  - `procurement/api/views.py` — corrected the `DeliveryDetailView.patch`
+    description: editing a delivery in a FINALISED/PAID payout is `409
+    payout_state_error`, while `409 not_editable` is for editing a correction
+    note ("Only procurement deliveries can be edited").
+  - `procurement/api/schema.py` — corrected `CORRECTION_EXAMPLE`: the correction
+    `magnitude` is a **money** value at 2 dp (`245.00`, not `10.000`), a credit
+    note's `amount` is **positive** (`245.00`, not `-245.00`), and the example was
+    renamed "Credit note of 245.00".
+- Documentation:
+  - README §6 — added the M3 marker/`tests/api` commands and the current measured
+    result (**527 passed**: 325 unit+integration + 202 API, 96% whole-package);
+    §7 — documented the **unauthenticated (`AllowAny`)** permission policy and
+    linked the API map; §11 — rewrote the limitations for the post-M3 state and
+    fixed the `requirements.txt` note (it is UTF-16 LE, not UTF-8).
+  - `backend/procurement/api/README.md` (new) — the API rule-to-service-to-test
+    map (operation → view → M2 service → acceptance case → focused tests), the
+    cross-cutting suites, and the API01–API12 acceptance matrix.
+  - `COVERAGE.md` refreshed (527 passed).
+- Verification run (from `backend/`, isolated PostgreSQL): full suite **527
+  passed** (325 + 202); `ruff check` clean; `manage.py check` no issues;
+  `makemigrations --check --dry-run` no changes; `manage.py spectacular
+  --validate` exit 0 (0 warnings / 0 errors).
+

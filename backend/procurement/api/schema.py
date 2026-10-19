@@ -251,16 +251,16 @@ DELIVERY_PREVIEW_EXAMPLE = OpenApiExample(
 )
 
 CORRECTION_EXAMPLE = OpenApiExample(
-    "Credit note for 10 kg",
+    "Credit note of 245.00",
     value={
         "id": 41,
         "farmer": 1,
         "kind": "CREDIT_NOTE",
         "original_delivery": 7,
-        "correction_magnitude": "10.000",
+        "correction_magnitude": "245.00",
         "reason": "Returned to farmer",
         "accounting_date": "2026-01-12",
-        "amount": "-245.00",
+        "amount": "245.00",
         "payout": None,
         "recorded_at": "2026-01-12T04:15:00.000000Z",
     },
