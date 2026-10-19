@@ -358,3 +358,46 @@ Produced:
   timeline + `event_type` filter; `tests/api/test_advances.py` ledger key updated.
 - README §7 — pagination/ordering/filter table and inclusive-date note, ledger
   event-timeline contract; `COVERAGE.md` refreshed.
+
+---
+
+## Entry 11 — Gated reviewer business-clock aid
+
+> Expose the existing injectable M2 clock as a gated reviewer aid. Headers:
+> `X-Test-Clock`, `X-Review-Key`. Configuration: `ALLOW_REVIEW_CLOCK` defaults to
+> false; the review key comes from environment configuration. Requirements:
+> accept an override only when enabled and authorised; require a valid
+> timezone-aware timestamp; reject malformed timestamps and unauthorised/disabled
+> attempts with documented errors; use request-local clock injection; never change
+> global time or shared service state; keep audit timestamps and request logs on
+> real time; return the effective business date in preview. Do not log the review
+> key or complete sensitive headers. Do not introduce a production bypass. Test:
+> no override; valid authorised override; disabled flag; missing/wrong key;
+> malformed or timezone-naive timestamp; two simultaneous requests with different
+> clocks each receiving its own business date. Document configuration using
+> placeholders and explain demo-only use.
+
+Produced:
+
+- `config/settings.py` — `ALLOW_REVIEW_CLOCK` (bool, default `False`) and
+  `REVIEW_CLOCK_KEY` (str, default empty) read from the environment via
+  `environ.Env`; registered `ReviewClockMiddleware` after `RequestIDMiddleware`.
+- `procurement/api/middleware.py` — `ReviewClockMiddleware`: when `X-Test-Clock`
+  is present, requires the aid to be enabled and `X-Review-Key` to match the
+  configured key (constant-time `secrets.compare_digest`), then parses a
+  timezone-aware ISO-8601 instant and installs it with the existing
+  `use_clock(FrozenClock(...))` **ContextVar** for the request only. Disabled →
+  `403 review_clock_disabled`, missing/wrong key → `403 review_clock_unauthorized`,
+  malformed/naive → `400 review_clock_invalid`, each logged as `request.rejected`
+  without the key or header values.
+- `procurement/api/errors.py` — documented the three codes in `_CODE_STATUS`.
+- `procurement/api/serializers.py` — added `business_date` (effective clock date,
+  resolved via `get_clock().today()`) to `DeliveryPreviewSerializer`.
+- `tests/api/test_review_clock.py` (new, 11 tests) — no override; authorised
+  override changes `business_date` only; disabled flag; missing and wrong key;
+  malformed and timezone-naive timestamp; audit `recorded_at` stays on real time
+  under an override; two concurrent requests keep independent business dates with
+  no leakage; a non-ASCII key is rejected (not a crash); the key/header value is
+  never logged.
+- `.env.example` + README §10.1 — placeholders and demo-only rationale. `COVERAGE.md`
+  refreshed.

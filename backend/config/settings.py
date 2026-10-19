@@ -52,6 +52,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'procurement.api.middleware.RequestIDMiddleware',
+    'procurement.api.middleware.ReviewClockMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -214,3 +215,18 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
+# Reviewer clock aid (demo-only). See procurement/api/middleware.py and README
+# section 10. When ALLOW_REVIEW_CLOCK is true and the caller presents a matching
+# REVIEW_CLOCK_KEY, a single request may pin the *business* clock through the
+# X-Test-Clock header. This changes business-date decisions for that request only
+# (request-local ContextVar, never global time) and never affects audit
+# timestamps or request logs, which stay on real time. There is no production
+# bypass: the aid is disabled by default and requires the secret key, which is
+# read from the environment and never logged.
+env = environ.Env(
+    ALLOW_REVIEW_CLOCK=(bool, False),
+    REVIEW_CLOCK_KEY=(str, ""),
+)
+ALLOW_REVIEW_CLOCK = env.bool("ALLOW_REVIEW_CLOCK")
+REVIEW_CLOCK_KEY = env("REVIEW_CLOCK_KEY")

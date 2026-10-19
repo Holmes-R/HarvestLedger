@@ -495,7 +495,8 @@ sensitive-data exclusions and hosted log access.
   `large-advance`, `finalised-and-corrections`. They are a readable
   specification; `seed_data` executes a comparable subset through the services.
 - **Reviewer clock:** `procurement.clock` exposes `use_clock(FrozenClock(...))`
-  for tests. There is intentionally no API endpoint to change the clock.
+  for tests. A **demo-only, gated** HTTP aid can pin the *business* clock for a
+  single request — see [10.1 Reviewer clock aid](#101-reviewer-clock-aid-demo-only).
 - **Safe reseeding:** the command is non-destructive (`get_or_create`), so it is
   safe to re-run at any time. To start clean, drop and recreate the database,
   then run `migrate` and `seed_data`.
@@ -504,6 +505,63 @@ sensitive-data exclusions and hosted log access.
   for the locking guarantees, and `python -m pytest -m m2` for the M2 rules.
 - **Coverage:** [COVERAGE.md](COVERAGE.md) records the command and the
   business-rules vs overall figures.
+
+### 10.1 Reviewer clock aid (demo-only)
+
+Purpose: let a reviewer run the same request against a chosen business date
+without touching system time, so date-dependent behaviour (future-delivery
+rejection, weekly payout grouping around a week boundary) can be demonstrated on
+a hosted demo.
+
+Configuration (environment only; never hard-coded, never committed):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ALLOW_REVIEW_CLOCK` | `false` | Master switch; the aid is off unless this is `true`. |
+| `REVIEW_CLOCK_KEY` | *(empty)* | Shared secret the caller must present. An empty key disables authorisation. |
+
+Placeholders (see `backend/.env.example`):
+
+```
+ALLOW_REVIEW_CLOCK=false
+REVIEW_CLOCK_KEY=<set-a-demo-only-secret>
+```
+
+Usage, only when enabled **and** the key matches:
+
+```
+POST /api/v1/deliveries/preview/
+X-Review-Key: <the-review-key>
+X-Test-Clock: 2026-12-31T23:00:00+05:30
+```
+
+The response includes the `business_date` the calculation used (normally the real
+IST date; the override date when authorised). Behaviour:
+
+- The override is **request-local** (a `contextvars` override). It never changes
+  global/system time or any shared service state; two concurrent requests with
+  different `X-Test-Clock` values each see their own business date.
+- **Audit timestamps** (`created_at`, `recorded_at`, `finalised_at`, `paid_at`)
+  and **request-log timestamps** always use real time.
+- `X-Test-Clock` must be a **timezone-aware ISO-8601** instant; a naive or
+  malformed value is rejected.
+
+Documented errors (same envelope as every other error):
+
+| Condition | HTTP | `error.code` |
+|---|---:|---|
+| `X-Test-Clock` sent while `ALLOW_REVIEW_CLOCK=false` | 403 | `review_clock_disabled` |
+| Enabled but `X-Review-Key` missing or wrong | 403 | `review_clock_unauthorized` |
+| Timestamp malformed or timezone-naive | 400 | `review_clock_invalid` |
+
+The review key and header values are never logged or echoed.
+
+**Demo-only:** there is no production bypass. Leave `ALLOW_REVIEW_CLOCK=false`
+and `REVIEW_CLOCK_KEY` blank everywhere except a throwaway demo deployment, and
+never commit a real value. Tests pin the clock in-process with
+`use_clock(FrozenClock(...))`; this header aid exists purely so a reviewer can
+demonstrate date-dependent rules on a hosted demo where process-level injection
+is not available.
 
 ## 11. Known limitations
 

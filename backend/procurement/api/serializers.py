@@ -17,6 +17,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail
 
 from procurement.api.errors import GradeInUse
+from procurement.clock import get_clock
 from procurement.models import (
     GRADE_NOTE_KINDS,
     Advance,
@@ -504,6 +505,10 @@ class DeliveryPreviewSerializer(serializers.Serializer):
     crop_grade = serializers.IntegerField(source="crop_grade.pk", read_only=True)
     delivered_on = serializers.DateField(read_only=True)
     accounting_date = serializers.DateField(read_only=True)
+    #: Effective business date for the request's clock. Normally the real IST
+    #: date; reflects the reviewer override when one is authorised, so a demo can
+    #: see exactly which business date the calculation was made against.
+    business_date = serializers.SerializerMethodField()
     gross_weight_kg = serializers.DecimalField(read_only=True, **_GROSS)
     moisture_percent = serializers.DecimalField(read_only=True, **_MOISTURE)
     threshold_used = serializers.DecimalField(read_only=True, **_MOISTURE)
@@ -515,6 +520,10 @@ class DeliveryPreviewSerializer(serializers.Serializer):
     deduction_kg = serializers.DecimalField(read_only=True, **_DERIVED)
     net_kg = serializers.DecimalField(read_only=True, **_DERIVED)
     amount = serializers.DecimalField(read_only=True, **_MONEY)
+
+    @extend_schema_field(serializers.DateField)
+    def get_business_date(self, obj):
+        return get_clock().today()
 
 
 # Server-computed delivery fields a write must never supply. ``crop_grade``,

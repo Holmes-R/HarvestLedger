@@ -83,6 +83,10 @@ _CODE_STATUS = {
     "future_delivery_date": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "invalid_moisture_bounds": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "invalid_state": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    # Gated reviewer clock aid (see middleware.ReviewClockMiddleware).
+    "review_clock_disabled": status.HTTP_403_FORBIDDEN,
+    "review_clock_unauthorized": status.HTTP_403_FORBIDDEN,
+    "review_clock_invalid": status.HTTP_400_BAD_REQUEST,
 }
 
 _FALLBACK_VALIDATION = status.HTTP_400_BAD_REQUEST
