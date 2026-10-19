@@ -191,17 +191,18 @@ strings** (never JSON floats) at the model field's scale —
 | POST | /api/v1/deliveries/ | Record a delivery |
 | GET | /api/v1/deliveries/{id}/ | Delivery detail |
 | PATCH | /api/v1/deliveries/{id}/ | Edit an unsettled delivery |
+| POST | /api/v1/deliveries/{id}/corrections/ | Record a credit/debit note against that delivery |
 | GET | /api/v1/advances/ | List advances (`farmer` filter) |
 | POST | /api/v1/advances/ | Post an advance |
 | GET | /api/v1/advances/{id}/ | Advance detail |
 | GET | /api/v1/corrections/ | List credit/debit notes (`farmer`, `kind`, `original_delivery`) |
 | POST | /api/v1/corrections/ | Record a credit/debit note |
 | GET | /api/v1/corrections/{id}/ | Correction detail |
-| POST | /api/v1/payouts/generate/ | Generate/extend a weekly DRAFT (`farmer`, `week_start`) |
-| GET | /api/v1/payouts/ | List payouts (`farmer`, `status`, `from`, `to`) |
-| GET | /api/v1/payouts/{id}/ | Payout detail |
+| POST | /api/v1/payouts/generate/ | Generate/extend a weekly DRAFT (`farmer`, `week_start`; empty week → `payout: null`) |
+| GET | /api/v1/payouts/ | List payout statements (`farmer`, `status`, `from`, `to`) |
+| GET | /api/v1/payouts/{id}/ | Payout statement (with member deliveries/corrections) |
 | POST | /api/v1/payouts/{id}/finalise/ | Finalise a DRAFT payout (recovers advance) |
-| POST | /api/v1/payouts/{id}/pay/ | Settle a FINALISED payout |
+| POST | /api/v1/payouts/{id}/mark-paid/ | Settle a FINALISED payout |
 
 **Pagination.** List endpoints return the standard page envelope
 (`count`, `next`, `previous`, `results`) at 50 items per page; pass `?page=`.
@@ -220,7 +221,7 @@ Codes map to statuses deliberately: `400` malformed fields/types/precision
 (`required`, `max_decimal_places`, `protected_field`, `unsupported_field`, ...);
 `404` unknown resources (`*_not_found`, `not_found`); `409` duplicates and
 forbidden state transitions (`payout_state_error`, `price_already_exists`,
-`original_not_settled`, `original_changed`, `not_editable`, `empty_week`,
+`original_not_settled`, `original_changed`, `not_editable`,
 `duplicate_crop_grade`, `grade_in_use`, `duplicate_crop`, `conflict`,
 `referenced_record`); `422` domain rejection
 of a well-formed request (`price_not_found`, `grade_not_allowed`,
@@ -294,6 +295,42 @@ separately; DRAFT `draft_projection` is kept apart from settled recovery
 total_recorded_amount`, so no delivery is double counted). `?from=`/`?to=`
 (ISO dates) bound the returned history rows, while the totals, balance and
 reconciliation always cover the full history.
+
+**Deliveries.** `POST /deliveries/preview/` validates the input, resolves the
+effective price and returns the whole breakdown (threshold used, applied price and
+its `price_list_entry`, deduction percent, deduction kg, net kg, amount) with the
+effective business `accounting_date`, writing nothing. `POST /deliveries/` takes
+the original inputs only (`farmer`, `crop_grade`, `delivered_on`,
+`gross_weight_kg`, `moisture_percent`) and recalculates authoritatively through
+`delivery.record_delivery`; a forged `amount`, `deduction_kg`, `applied_price`,
+`net_kg`, `price_list_entry` or membership field (`payout`) is refused with `400
+protected_field`. `PATCH /deliveries/{id}/` recalculates and refreshes the DRAFT
+payout, while a delivery in a FINALISED or PAID payout is immutable (`409
+payout_state_error`). `POST /deliveries/{id}/corrections/` records a credit/debit
+note against the delivery named in the URL: ownership, state and the signed total
+are resolved and validated by `corrections.record_correction` (never trusted from
+the client) and the original snapshot is preserved.
+
+**Payouts.** A payout response is a **statement**: the stored `status`, the
+Monday..Sunday `week_*` bounds, the server-computed `gross_amount`,
+`advance_deduction` and `net_amount`, the `finalised_at`/`paid_at` timestamps,
+and the exact `deliveries` currently attached to the week (procurement
+deliveries and credit/debit notes together, each rendered with its frozen
+breakdown). `POST /payouts/generate/` always returns the envelope
+`{"payout": <statement or null>, "reason": <string or null>}`: a created or
+extended DRAFT is `201` with the statement, while an **empty week** is a
+successful no-op (`200`, `payout: null`, `reason: NO_ELIGIBLE_DELIVERIES`) that
+invents no payout and leaves balances untouched. Repeated generation reuses the
+same DRAFT and refreshes its membership; a delivery recorded after the week was
+finalised gets a **supplementary** DRAFT. `finalise` is the only step that
+recovers `min(outstanding_advance, 30% of gross)` (once, atomically), and
+`mark-paid` is the only settlement (`FINALISED -> PAID`, never recovering
+again); any other transition is `409 payout_state_error`. Client input can never
+set membership, totals, status or a balance: `farmer`, `week_start` are the only
+accepted generate fields (a forged `deliveries`/`status`/total is `400
+protected_field`), there is no generic mutation route (list has no `POST`, the
+statement has no `PATCH`/`DELETE`), and the finalised financial values are
+frozen.
 
 ## 8. Business rules and assumptions
 

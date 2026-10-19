@@ -38,20 +38,6 @@ from .request_log import log_event, new_request_id
 logger = logging.getLogger("procurement.api")
 
 
-class EmptyWeek(APIException):
-    """No deliveries fall in the requested week (documented service sentinel).
-
-    ``payouts.build_weekly_payout`` returns ``None`` for an empty week; the API
-    surfaces that as ``409`` so the client can distinguish it from a bad request.
-    """
-
-    status_code = status.HTTP_409_CONFLICT
-    default_detail = (
-        "No deliveries fall in that week; there is no payout to generate."
-    )
-    default_code = "empty_week"
-
-
 class GradeInUse(APIException):
     """A grade with historical usage (price or delivery) cannot be removed.
 
@@ -84,7 +70,6 @@ _CODE_STATUS = {
     "original_changed": status.HTTP_409_CONFLICT,
     "not_editable": status.HTTP_409_CONFLICT,
     "advance_reconciliation_failed": status.HTTP_409_CONFLICT,
-    "empty_week": status.HTTP_409_CONFLICT,
     "grade_in_use": status.HTTP_409_CONFLICT,
     "duplicate_crop": status.HTTP_409_CONFLICT,
     # Database conflicts surfaced after a rolled-back transaction.

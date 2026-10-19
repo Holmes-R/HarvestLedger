@@ -33,10 +33,15 @@ from procurement.models import (
     PriceListEntry,
 )
 from procurement.services.advances import reconcile_outstanding
+from procurement.services.corrections import record_correction
 from procurement.services.delivery import preview_delivery
 from procurement.services.errors import CropNotFound, FarmerNotFound
 from procurement.services.ledger import build_farmer_ledger
-from procurement.services.payouts import finalise_payout, mark_payout_paid
+from procurement.services.payouts import (
+    build_weekly_payout,
+    finalise_payout,
+    mark_payout_paid,
+)
 
 from .serializers import (
     AdvanceCreateSerializer,
@@ -47,6 +52,7 @@ from .serializers import (
     CropGradeSerializer,
     CropSerializer,
     CropWriteSerializer,
+    DeliveryCorrectionCreateSerializer,
     DeliveryEditSerializer,
     DeliveryPreviewSerializer,
     DeliveryReadSerializer,
@@ -54,10 +60,16 @@ from .serializers import (
     FarmerLedgerSerializer,
     FarmerSerializer,
     PayoutGenerateSerializer,
+    PayoutGenerationSerializer,
     PayoutSerializer,
     PriceEntryCreateSerializer,
     PriceListEntrySerializer,
 )
+
+#: Report code returned by ``POST /payouts/generate/`` when the week has no
+#: eligible deliveries. Empty weeks are a successful no-op, so a payout is never
+#: invented and the stance is stated explicitly instead.
+NO_ELIGIBLE_DELIVERIES = "NO_ELIGIBLE_DELIVERIES"
 
 
 def health(request):
@@ -339,6 +351,26 @@ class DeliveryDetailView(GenericAPIView):
 # --- Advances ---------------------------------------------------------------
 
 
+class DeliveryCorrectionsView(GenericAPIView):
+    serializer_class = DeliveryCorrectionCreateSerializer
+
+    @extend_schema(
+        request=DeliveryCorrectionCreateSerializer,
+        responses=CorrectionReadSerializer,
+    )
+    def post(self, request, pk):
+        serializer = DeliveryCorrectionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        correction = record_correction(
+            Delivery(pk=pk), data["kind"], data["magnitude"], data["reason"]
+        )
+        return Response(
+            CorrectionReadSerializer(correction).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class AdvanceListCreate(ListCreateAPIView):
     serializer_class = AdvanceSerializer
 
@@ -439,7 +471,11 @@ class CorrectionDetail(RetrieveAPIView):
 
 def _resolve_payout(pk):
     try:
-        return Payout.objects.get(pk=pk)
+        return (
+            Payout.objects.select_related("farmer")
+            .prefetch_related("deliveries")
+            .get(pk=pk)
+        )
     except (Payout.DoesNotExist, ValueError, TypeError) as exc:
         raise NotFound(f"Payout {pk} was not found.") from exc
 
@@ -447,20 +483,33 @@ def _resolve_payout(pk):
 class PayoutGenerateView(GenericAPIView):
     serializer_class = PayoutGenerateSerializer
 
-    @extend_schema(request=PayoutGenerateSerializer, responses=PayoutSerializer)
+    @extend_schema(
+        request=PayoutGenerateSerializer, responses=PayoutGenerationSerializer
+    )
     def post(self, request):
         serializer = PayoutGenerateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        payout = serializer.save()
-        return Response(PayoutSerializer(payout).data, status=status.HTTP_201_CREATED)
+        data = serializer.validated_data
+        payout = build_weekly_payout(data["farmer"], data["week_start"])
+        if payout is None:
+            return Response(
+                {"payout": None, "reason": NO_ELIGIBLE_DELIVERIES},
+                status=status.HTTP_200_OK,
+            )
+        return Response(
+            {"payout": PayoutSerializer(payout).data, "reason": None},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class PayoutList(ListAPIView):
     serializer_class = PayoutSerializer
 
     def get_queryset(self):
-        queryset = Payout.objects.select_related("farmer").order_by(
-            "-week_start", "-pk"
+        queryset = (
+            Payout.objects.select_related("farmer")
+            .prefetch_related("deliveries")
+            .order_by("-week_start", "-pk")
         )
         params = self.request.query_params
         farmer = params.get("farmer")

@@ -7,26 +7,26 @@ database. From `backend/`:
 venv/Scripts/python.exe -m pytest --reuse-db -q -ra --cov=procurement --cov-report=term --cov-report=json:coverage.json
 ```
 
-Result: **450 passed**, exit code 0, with no reported skips or xfails.
+Result: **473 passed**, exit code 0, with no reported skips or xfails.
 
-- Whole `procurement` package: **1,960 statements, 94 missed**, **95%**.
+- Whole `procurement` package: **1,978 statements, 94 missed**, **95%**.
 - `procurement.services` (business rules): **627 statements, 26 missed**,
   **~96%** — the 80% service target is met.
-- `procurement.api` (M3 HTTP layer): **837 statements, 43 missed**, **~95%**.
+- `procurement.api` (M3 HTTP layer): **855 statements, 43 missed**, **~95%**.
 
 Line coverage alone does not establish correctness of every rule.
 
 | Module | Coverage |
 |---|---:|
-| `api/errors.py` | 80% |
+| `api/errors.py` | 85% |
 | `api/serializers.py` | 97% |
-| `api/views.py` | 96% |
+| `api/views.py` | 97% |
 | `precision.py` | 86% |
 | `services/advances.py` | 98% |
 | `services/corrections.py` | 88% |
 | `services/delivery.py` | 96% |
 | `services/errors.py` | 100% |
-| `services/ledger.py` | 100% |
+| `services/ledger.py` | 98% |
 | `services/money.py` | 94% |
 | `services/payouts.py` | 95% |
 | `services/pricing.py` | 95% |

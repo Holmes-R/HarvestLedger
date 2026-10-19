@@ -235,3 +235,83 @@ Produced:
   draft-vs-settled separation, corrections, bounded history and range validation.
 - README §7 — advances contract and ledger (bounded history, no double counting);
   `COVERAGE.md` refreshed (450 passed).
+
+---
+
+## Entry 8 — Delivery preview/save/edit and nested corrections
+
+> Implement GET/POST /api/v1/deliveries/, GET/PATCH /api/v1/deliveries/{id}/,
+> POST /api/v1/deliveries/preview/ and POST /api/v1/deliveries/{id}/corrections/.
+> Call the existing delivery and correction services. Preview must persist
+> nothing, return the complete calculation breakdown, include the effective
+> business date and identify the applied price entry and rate. Save must accept
+> original inputs only, recalculate authoritatively, return the stored snapshot and
+> reject forged amount, deduction, applied-price and membership fields. Editing
+> must preserve M2 DRAFT consistency and reject edits to FINALISED/PAID
+> deliveries. Corrections must use the URL's original-delivery identifier, resolve
+> and validate persisted ownership/state through the service, not trust
+> client-supplied ownership or calculated signed totals, and preserve original
+> snapshots. Test malformed input, missing references, missing prices, moisture
+> boundaries, preview non-persistence, preview/save price changes, capacity
+> overflow, finalised edits and correction ownership.
+
+Produced:
+
+- `procurement/api/serializers.py` — `DeliveryCorrectionCreateSerializer` (kind,
+  magnitude, reason only; the original comes from the URL; client `farmer`,
+  `original_delivery`, `amount`, `correction_magnitude`, `accounting_date` and
+  `payout` are refused as `400 protected_field`).
+- `procurement/api/views.py` — `DeliveryCorrectionsView` calls
+  `corrections.record_correction` with the path delivery id.
+- `procurement/api/urls.py` — `deliveries/{id}/corrections/`.
+- `tests/api/test_delivery_contract.py` — 14 tests: preview breakdown + business
+  date + price entry/rate + non-persistence, malformed input, unknown references,
+  missing price, moisture boundaries, authoritative recalculation on price change,
+  forged breakdown/membership fields, capacity overflow, DRAFT refresh on edit,
+  FINALISED/PAID edit rejection, and nested-correction ownership/state/total
+  rejection.
+- README §7 — deliveries/corrections contract; `COVERAGE.md` refreshed
+  (464 passed).
+
+---
+
+## Entry 9 — Payout statements, generation, finalisation and settlement
+
+> Implement GET/POST /api/v1/payouts/, GET /api/v1/payouts/{id}/, POST
+> /api/v1/payouts/generate/, POST /api/v1/payouts/{id}/finalise/ and POST
+> /api/v1/payouts/{id}/mark-paid/ (renamed from /pay/). Call the existing payout
+> services and keep all business calculation there. Payout statements must show
+> farmer, Mon..Sun period, included deliveries/corrections with their stored
+> breakdowns, gross/recovery/net, status and timestamps. Preserve snapshot and
+> immutability. Do not let clients set totals, outstanding, membership or status
+> through generic CRUD. For an empty week preserve the documented no-payout stance
+> and return an explicit representation such as {"payout": null, "reason":
+> "NO_ELIGIBLE_DELIVERIES"}. Test normal and repeated draft generation,
+> supplementary payouts, 30%-capped recovery (100.05 -> 30.01), finalise/mark-paid,
+> repeated/invalid transitions as controlled conflicts, mark-paid before
+> finalisation, finalised financial immutability, concurrent generation and
+> finalisation via the API, and rollback after an unexpected failure.
+
+Produced:
+
+- `procurement/api/serializers.py` — `PayoutSerializer` is now a full statement
+  (`farmer_name`, stored totals/status/timestamps and a `deliveries` list of
+  frozen member snapshots rendered by `DeliveryReadSerializer`); new
+  `PayoutGenerationSerializer` for the generate envelope;
+  `PayoutGenerateSerializer` refuses membership/total/status fields
+  (`400 protected_field`) and no longer raises on an empty week.
+- `procurement/api/views.py` — `PayoutGenerateView` calls `build_weekly_payout`
+  and returns `{"payout": <statement>, "reason": null}` (`201`) or
+  `{"payout": null, "reason": "NO_ELIGIBLE_DELIVERIES"}` (`200`); list/detail
+  prefetch members; finalise/mark-paid render the statement.
+- `procurement/api/urls.py` — `payouts/{id}/pay/` renamed to
+  `payouts/{id}/mark-paid/`.
+- `procurement/api/errors.py` — removed the now-unused `EmptyWeek` exception and
+  its `empty_week` status-mapping entry (empty weeks are a success, not a
+  conflict).
+- `tests/api/test_payouts.py` — rewritten: statement contents, empty-week no-op,
+  idempotent repeated generation, supplementary payout, `100.05 -> 30.01`
+  recovery rounding, finalise/mark-paid, repeated/out-of-order transitions,
+  mark-paid before finalisation, finalised immutability (405 on generic CRUD),
+  rollback on unexpected failure, and two threaded API concurrency tests.
+- README §7 payouts contract; `COVERAGE.md` refreshed (473 passed).

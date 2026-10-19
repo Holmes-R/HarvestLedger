@@ -16,7 +16,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail
 
-from procurement.api.errors import EmptyWeek, GradeInUse
+from procurement.api.errors import GradeInUse
 from procurement.models import (
     GRADE_NOTE_KINDS,
     Advance,
@@ -35,7 +35,6 @@ from procurement.services.errors import (
     CropNotFound,
     FarmerNotFound,
 )
-from procurement.services.payouts import build_weekly_payout
 from procurement.services.pricing import create_price_entry
 
 
@@ -760,51 +759,107 @@ class CorrectionCreateSerializer(ProtectedFieldMixin, serializers.Serializer):
         )
 
 
+class DeliveryCorrectionCreateSerializer(ProtectedFieldMixin, serializers.Serializer):
+    """Correction against the delivery named in the URL.
+
+    The original is taken from the path, so ownership and state are resolved and
+    validated by the service from persisted data. A client-supplied
+    ``original_delivery``, ``farmer`` or any computed field (``amount``,
+    ``correction_magnitude``, ``accounting_date``, ``payout``) is refused rather
+    than trusted.
+    """
+
+    kind = serializers.ChoiceField(choices=GRADE_NOTE_KINDS)
+    magnitude = model_decimal(Delivery, "correction_magnitude")
+    reason = serializers.CharField()
+    protected_fields = (
+        "id",
+        "farmer",
+        "original_delivery",
+        "correction_magnitude",
+        "accounting_date",
+        "amount",
+        "payout",
+        "recorded_at",
+    )
+
+
 # --- Payouts ----------------------------------------------------------------
 
 
 class PayoutSerializer(serializers.ModelSerializer):
+    """A payout statement: server-computed totals, status and frozen members.
+
+    The totals, status and timestamps are stored, never client-derived, and the
+    ``deliveries`` list renders the exact member snapshots currently attached by
+    the service (procurement deliveries and credit/debit notes alike).
+    """
+
+    farmer_name = serializers.CharField(source="farmer.name", read_only=True)
     gross_amount = model_decimal(Payout, "gross_amount", read_only=True)
     advance_deduction = model_decimal(Payout, "advance_deduction", read_only=True)
     net_amount = model_decimal(Payout, "net_amount", read_only=True)
+    deliveries = serializers.SerializerMethodField()
 
     class Meta:
         model = Payout
         fields = (
             "id",
             "farmer",
+            "farmer_name",
             "week_start",
             "week_end",
             "status",
             "gross_amount",
             "advance_deduction",
             "net_amount",
+            "deliveries",
             "created_at",
             "finalised_at",
             "paid_at",
         )
         read_only_fields = fields
 
+    @extend_schema_field(DeliveryReadSerializer(many=True))
+    def get_deliveries(self, payout):
+        members = sorted(
+            payout.deliveries.all(),
+            key=lambda member: (member.accounting_date, member.pk),
+        )
+        return DeliveryReadSerializer(members, many=True).data
+
+
+class PayoutGenerationSerializer(serializers.Serializer):
+    """The outcome of a generation request.
+
+    ``payout`` is the created or extended DRAFT statement, or ``null`` when the
+    week has no eligible deliveries; ``reason`` then explains the absence.
+    """
+
+    payout = PayoutSerializer(read_only=True, allow_null=True)
+    reason = serializers.CharField(read_only=True, allow_null=True)
+
 
 class PayoutGenerateSerializer(ProtectedFieldMixin, serializers.Serializer):
+    """Validates a generation request; the view calls the service.
+
+    ``build_weekly_payout`` may legitimately return ``None`` (an empty week) and
+    DRF's ``save()`` forbids that, so generation is issued by the view rather
+    than through ``create()``.
+    """
+
     farmer = FarmerReferenceField(queryset=Farmer.objects.all())
     week_start = serializers.DateField()
     protected_fields = (
         "id",
+        "farmer_name",
         "week_end",
         "status",
         "gross_amount",
         "advance_deduction",
         "net_amount",
+        "deliveries",
         "created_at",
         "finalised_at",
         "paid_at",
     )
-
-    def create(self, validated_data):
-        payout = build_weekly_payout(
-            validated_data["farmer"], validated_data["week_start"]
-        )
-        if payout is None:
-            raise EmptyWeek()
-        return payout

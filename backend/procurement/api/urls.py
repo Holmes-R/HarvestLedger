@@ -38,6 +38,11 @@ urlpatterns = [
         views.DeliveryDetailView.as_view(),
         name="delivery-detail",
     ),
+    path(
+        "deliveries/<int:pk>/corrections/",
+        views.DeliveryCorrectionsView.as_view(),
+        name="delivery-corrections",
+    ),
     path("advances/", views.AdvanceListCreate.as_view(), name="advance-list"),
     path(
         "advances/<int:pk>/",
@@ -72,8 +77,8 @@ urlpatterns = [
         name="payout-finalise",
     ),
     path(
-        "payouts/<int:pk>/pay/",
+        "payouts/<int:pk>/mark-paid/",
         views.PayoutMarkPaidView.as_view(),
-        name="payout-pay",
+        name="payout-mark-paid",
     ),
 ]

@@ -216,11 +216,13 @@ def test_unexpected_financial_failure_rolls_back(api_client, farmer, grade, pric
         {**PAYLOAD, "farmer": farmer.id, "crop_grade": grade.id},
         format="json",
     )
-    payout_id = api_client.post(
-        reverse("api:payout-generate"),
-        {"farmer": farmer.id, "week_start": "2026-01-05"},
-        format="json",
-    ).json()["id"]
+    payout_id = (
+        api_client.post(
+            reverse("api:payout-generate"),
+            {"farmer": farmer.id, "week_start": "2026-01-05"},
+            format="json",
+        ).json()["payout"]["id"]
+    )
 
     def boom(payout):
         with transaction.atomic():
