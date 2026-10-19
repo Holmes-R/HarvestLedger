@@ -315,3 +315,46 @@ Produced:
   mark-paid before finalisation, finalised immutability (405 on generic CRUD),
   rollback on unexpected failure, and two threaded API concurrency tests.
 - README §7 payouts contract; `COVERAGE.md` refreshed (473 passed).
+
+---
+
+## Entry 10 — Bounded pagination, whitelisted ordering and list filters
+
+> Apply bounded pagination to every growing list, including ledger history.
+> Default page size 20, maximum 100, stable ordering with an id tie-breaker.
+> Support filters: prices by crop and grade; deliveries by farmer and date range;
+> advances by farmer and date range; payouts by farmer, week and status; ledger by
+> date range and event type. Validate filter types and date ranges. Document
+> whether date filters are inclusive. Whitelist ordering fields rather than
+> accepting arbitrary expressions. Do not hide an unbounded nested event list
+> inside a paginated wrapper. Avoid unnecessary repeated queries via related
+> loading. Test pagination boundaries, maximum size, malformed filters, reversed
+> date ranges, deterministic ordering, and combined filters.
+
+Produced:
+
+- `procurement/api/pagination.py` — `StandardPagination` default page size **20**,
+  maximum **100** (over-large requests clamped, invalid sizes fall back);
+  `config/settings.py` `PAGE_SIZE=20`.
+- `procurement/api/filters.py` (new) — shared `parse_int`/`parse_date_param`
+  (rejects impossible dates), inclusive `date_range` (400 on an inverted range),
+  `order_queryset` (whitelisted + id tie-breaker) and `order_events` (stable
+  multi-pass sort with `event_type`/`id` tie-breakers).
+- `procurement/api/views.py` — `OrderingMixin.apply_ordering` on every list view
+  with a declared `ordering_fields` whitelist and an id-terminated
+  `default_ordering`; added date-range filters to deliveries/advances/corrections
+  and a `week` filter to payouts; `FarmerLedgerView` rewritten to a paginated
+  **event timeline** (`_ledger_events`) with `event_type` + date filters and a
+  full-history `summary`, so no unbounded list is nested in the wrapper.
+- `procurement/api/serializers.py` — replaced `FarmerLedgerSerializer` with
+  `LedgerSummarySerializer`, a discriminated `LedgerEventSerializer`
+  (`event_type`/`id`/`date`/`amount` + nullable `delivery`/`advance`/`payout`) and
+  a `LedgerPageSerializer` envelope; `LEDGER_EVENT_TYPES`.
+- `tests/api/test_pagination_filters.py` (new, 13 tests) — default page size,
+  max-size clamping, page walking, out-of-range page, malformed types/dates,
+  reversed ranges, unknown ordering, deterministic id tie-break, reversed
+  ordering, inclusive date bounds, `week`/status, crop/grade and combined filters.
+- `tests/api/test_ledger_api.py` — rewritten for the page envelope + event
+  timeline + `event_type` filter; `tests/api/test_advances.py` ledger key updated.
+- README §7 — pagination/ordering/filter table and inclusive-date note, ledger
+  event-timeline contract; `COVERAGE.md` refreshed.

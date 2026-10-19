@@ -180,7 +180,7 @@ def test_same_day_advances_are_distinct_and_all_counted(api_client, farmer):
     assert farmer.outstanding_advance == Decimal("300.00")
 
     ledger = api_client.get(reverse("api:farmer-ledger", args=[farmer.id]))
-    assert ledger.json()["total_advances"] == "300.00"
+    assert ledger.json()["summary"]["total_advances"] == "300.00"
 
 
 @pytest.mark.django_db
@@ -194,3 +194,30 @@ def test_advance_has_no_edit_or_delete(api_client, farmer):
     assert api_client.patch(url, {"amount": "1.00"}, format="json").status_code == 405
     assert api_client.delete(url).status_code == 405
     assert Advance.objects.get(pk=created["id"]).amount == Decimal("100.00")
+
+
+@pytest.mark.django_db
+def test_post_advance_rolls_back_on_unexpected_failure(api_client, farmer, monkeypatch):
+    api_client.post(
+        reverse("api:advance-list"),
+        {"farmer": farmer.id, "amount": "100.00", "given_on": "2026-01-05"},
+        format="json",
+    )
+
+    # The advance row is created before the balance is persisted; a failure while
+    # saving the farmer must roll the whole posting back, leaving both the row
+    # count and the balance as they were.
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("failure after the advance row was written")
+
+    monkeypatch.setattr(Farmer, "save", boom)
+    response = api_client.post(
+        reverse("api:advance-list"),
+        {"farmer": farmer.id, "amount": "250.00", "given_on": "2026-01-06"},
+        format="json",
+    )
+    assert response.status_code == 500
+    assert _error(response)["code"] == "internal_error"
+    assert Advance.objects.count() == 1  # the failed advance was not persisted
+    farmer.refresh_from_db()
+    assert farmer.outstanding_advance == Decimal("100.00")

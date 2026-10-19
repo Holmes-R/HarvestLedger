@@ -204,12 +204,36 @@ strings** (never JSON floats) at the model field's scale —
 | POST | /api/v1/payouts/{id}/finalise/ | Finalise a DRAFT payout (recovers advance) |
 | POST | /api/v1/payouts/{id}/mark-paid/ | Settle a FINALISED payout |
 
-**Pagination.** List endpoints return the standard page envelope
-(`count`, `next`, `previous`, `results`) at 50 items per page; pass `?page=`.
+**Pagination.** Every growing list — including the farmer ledger's event history —
+is paginated with the standard page envelope (`count`, `next`, `previous`,
+`results`). The default page size is **20** and the maximum is **100**: a larger
+`?page_size=` is clamped, a non-positive or unparseable one falls back to the
+default, and `?page=` walks the pages (an out-of-range page is `404`). No endpoint
+returns an unbounded collection, and the ledger never nests an unbounded event
+list inside its wrapper.
 
-**Filters.** Farmers support `?search=` (name/phone/village). Deliveries,
-advances, corrections and payouts support the query parameters listed above.
-An unknown `kind`/`status` or an unparseable date returns `400`.
+**Ordering.** Lists accept a whitelisted `?ordering=` (prefix `-` to reverse). The
+field must be one the endpoint declares — an unknown field is `400` (`invalid`),
+so an arbitrary ORM expression can never be injected. Every ordering is completed
+with a unique id tie-breaker (the ledger adds an `event_type` tie-breaker too), so
+the page sequence is deterministic.
+
+**Filters.** All list filters are additive (AND), and date filters are
+**inclusive on both ends** (`from` → `>=`, `to` → `<=`). A malformed type/date or a
+reversed range (`from` after `to`) is `400`.
+
+| List | Filters |
+|---|---|
+| farmers | `search` (name/phone/village) |
+| grades | `crop` |
+| prices | `crop`, `crop_grade` |
+| deliveries | `farmer`, `kind`, `payout`, `from`, `to` |
+| advances | `farmer`, `from`, `to` |
+| payouts | `farmer`, `week`, `status`, `from`, `to` |
+| corrections | `farmer`, `kind`, `original_delivery`, `from`, `to` |
+| farmer ledger | `from`, `to`, `event_type` |
+
+`week` is any day in the target week and is normalised to that week's Monday.
 
 **Errors.** Every error uses one envelope:
 
@@ -287,14 +311,20 @@ locking service. The same `(farmer, given_on)` is **not** a dedup key — severa
 advances may be posted on one day and each is counted once.
 
 **Ledger.** `GET /farmers/{id}/ledger/` projects the M2 `ledger.build_farmer_ledger`
-read model: deliveries (flagged `is_correction`), advances and payouts are listed
-separately; DRAFT `draft_projection` is kept apart from settled recovery
-(`settled_earnings`, `total_recovered`); it returns the current
-`outstanding_advance`, the `reconciliation`, and `earnings_identity_holds`
+read model as a **bounded page of events plus an account summary**. `results` is a
+single typed timeline — each row carries an `event_type`
+(`DELIVERY`/`CORRECTION`/`ADVANCE`/`PAYOUT`), its business `date`, the signed
+`amount` and the matching `delivery`/`advance`/`payout` object (the others `null`)
+— so the growing history *is* the paginated collection, never an unbounded list
+nested inside the wrapper. `?event_type=` narrows the timeline, `?from=`/`?to=`
+are inclusive bounds on the event date, and `?ordering=`/`?page=`/`?page_size=`
+apply as above. The `summary` (identity, `outstanding_advance`, `total_advances`,
+`settled_earnings`, `total_recovered`, `draft_projection`, `unassigned_earnings`,
+`total_recorded_amount`, `reconciliation`, `earnings_identity_holds`) always covers
+the **full** history, so a page or window never distorts the balance; DRAFT
+projections stay apart from settled recovery and no delivery is double counted
 (`settled_earnings + draft_projection + unassigned_earnings ==
-total_recorded_amount`, so no delivery is double counted). `?from=`/`?to=`
-(ISO dates) bound the returned history rows, while the totals, balance and
-reconciliation always cover the full history.
+total_recorded_amount`).
 
 **Deliveries.** `POST /deliveries/preview/` validates the input, resolves the
 effective price and returns the whole breakdown (threshold used, applied price and

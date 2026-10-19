@@ -162,7 +162,7 @@ REST_FRAMEWORK = {
     ]
     + (["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
     "DEFAULT_PAGINATION_CLASS": "procurement.api.pagination.StandardPagination",
-    "PAGE_SIZE": 50,
+    "PAGE_SIZE": 20,
     "COERCE_DECIMAL_TO_STRING": True,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "EXCEPTION_HANDLER": "procurement.api.errors.api_exception_handler",

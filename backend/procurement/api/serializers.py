@@ -645,25 +645,60 @@ class ReconciliationSerializer(serializers.Serializer):
     is_reconciled = serializers.BooleanField(read_only=True)
 
 
-class FarmerLedgerSerializer(serializers.Serializer):
-    farmer_id = serializers.IntegerField(read_only=True)
-    name = serializers.CharField(read_only=True)
-    phone = serializers.CharField(read_only=True)
-    outstanding_advance = serializers.DecimalField(read_only=True, **_MONEY)
-    advances = LedgerAdvanceSerializer(many=True, read_only=True)
-    deliveries = LedgerDeliverySerializer(many=True, read_only=True)
-    payouts = LedgerPayoutSerializer(many=True, read_only=True)
-    reconciliation = ReconciliationSerializer(read_only=True)
-    total_advances = serializers.DecimalField(read_only=True, **_MONEY)
-    settled_earnings = serializers.DecimalField(read_only=True, **_MONEY)
-    total_recovered = serializers.DecimalField(read_only=True, **_MONEY)
-    draft_projection = serializers.DecimalField(read_only=True, **_MONEY)
-    unassigned_earnings = serializers.DecimalField(read_only=True, **_MONEY)
-    total_recorded_amount = serializers.DecimalField(read_only=True, **_MONEY)
-    earnings_identity_holds = serializers.BooleanField(read_only=True)
-    is_reconciled = serializers.BooleanField(read_only=True)
-    history_from = serializers.DateField(read_only=True, allow_null=True)
-    history_to = serializers.DateField(read_only=True, allow_null=True)
+class LedgerSummarySerializer(serializers.Serializer):
+    """Account-level ledger facts: identity, balance, totals and reconciliation.
+
+    These describe the **whole** account and never depend on any history window
+    or page, so a bounded/paged view never distorts the balance.
+    """
+
+    farmer_id = serializers.IntegerField()
+    name = serializers.CharField()
+    phone = serializers.CharField()
+    outstanding_advance = serializers.DecimalField(**_MONEY)
+    reconciliation = ReconciliationSerializer()
+    total_advances = serializers.DecimalField(**_MONEY)
+    settled_earnings = serializers.DecimalField(**_MONEY)
+    total_recovered = serializers.DecimalField(**_MONEY)
+    draft_projection = serializers.DecimalField(**_MONEY)
+    unassigned_earnings = serializers.DecimalField(**_MONEY)
+    total_recorded_amount = serializers.DecimalField(**_MONEY)
+    earnings_identity_holds = serializers.BooleanField()
+    is_reconciled = serializers.BooleanField()
+    history_from = serializers.DateField(allow_null=True)
+    history_to = serializers.DateField(allow_null=True)
+
+
+#: The kinds of event that make up a farmer ledger timeline.
+LEDGER_EVENT_TYPES = ("DELIVERY", "CORRECTION", "ADVANCE", "PAYOUT")
+
+
+class LedgerEventSerializer(serializers.Serializer):
+    """One row of the ledger event timeline.
+
+    ``event_type`` discriminates the payload: a delivery/correction carries
+    ``delivery``, an advance ``advance`` and a payout ``payout``; the other two
+    are ``null``. ``amount`` is the signed money movement the event contributes
+    (a debit note is negative) and ``date`` is its business date.
+    """
+
+    event_type = serializers.ChoiceField(choices=LEDGER_EVENT_TYPES)
+    id = serializers.IntegerField()
+    date = serializers.DateField()
+    amount = serializers.DecimalField(**_MONEY)
+    delivery = LedgerDeliverySerializer(allow_null=True)
+    advance = LedgerAdvanceSerializer(allow_null=True)
+    payout = LedgerPayoutSerializer(allow_null=True)
+
+
+class LedgerPageSerializer(serializers.Serializer):
+    """A bounded page of ledger events plus the account summary."""
+
+    count = serializers.IntegerField()
+    next = serializers.CharField(allow_null=True)
+    previous = serializers.CharField(allow_null=True)
+    summary = LedgerSummarySerializer()
+    results = LedgerEventSerializer(many=True)
 
 
 # --- Advances ---------------------------------------------------------------

@@ -5,9 +5,10 @@ renders the result. No business calculation, transaction or row lock lives here.
 Path/body reference lookups are request-level resolution, not domain rules.
 """
 
+from collections import OrderedDict
+
 from django.db.models import Q
 from django.http import JsonResponse
-from django.utils.dateparse import parse_date
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import NotFound
@@ -20,6 +21,7 @@ from rest_framework.generics import (
 )
 from rest_framework.response import Response
 
+from procurement.clock import week_bounds
 from procurement.models import (
     GRADE_NOTE_KINDS,
     Advance,
@@ -43,7 +45,15 @@ from procurement.services.payouts import (
     mark_payout_paid,
 )
 
+from .filters import (
+    date_range,
+    order_events,
+    order_queryset,
+)
+from .filters import parse_date_param as _date
+from .filters import parse_int as _int
 from .serializers import (
+    LEDGER_EVENT_TYPES,
     AdvanceCreateSerializer,
     AdvanceReconciliationSerializer,
     AdvanceSerializer,
@@ -57,8 +67,10 @@ from .serializers import (
     DeliveryPreviewSerializer,
     DeliveryReadSerializer,
     DeliveryWriteSerializer,
-    FarmerLedgerSerializer,
     FarmerSerializer,
+    LedgerEventSerializer,
+    LedgerPageSerializer,
+    LedgerSummarySerializer,
     PayoutGenerateSerializer,
     PayoutGenerationSerializer,
     PayoutSerializer,
@@ -70,6 +82,11 @@ from .serializers import (
 #: eligible deliveries. Empty weeks are a successful no-op, so a payout is never
 #: invented and the stance is stated explicitly instead.
 NO_ELIGIBLE_DELIVERIES = "NO_ELIGIBLE_DELIVERIES"
+
+#: Event types exposed by the farmer ledger, and the fields a client may order it
+#: by. Ordering always finishes with the fixed ``(event_type, id)`` tie-breakers.
+LEDGER_ORDERING_FIELDS = ("date", "amount", "id", "event_type")
+LEDGER_DEFAULT_ORDERING = ("-date",)
 
 
 def health(request):
@@ -84,39 +101,35 @@ def _get_or_not_found(model, pk, error_cls, label):
         raise error_cls(f"{label} {pk} was not found.") from exc
 
 
-def _int(value, name):
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise DRFValidationError(
-            {name: [{"code": "invalid", "message": "A valid integer is required."}]}
-        ) from exc
+class OrderingMixin:
+    """Adds whitelisted ``?ordering=`` support to a list view.
 
+    Each view declares ``ordering_fields`` and a ``default_ordering`` (which must
+    itself end in an id tie-breaker); an unknown field is a ``400``.
+    """
 
-def _date(value, name):
-    parsed = parse_date(value)
-    if parsed is None:
-        raise DRFValidationError(
-            {
-                name: [
-                    {
-                        "code": "invalid",
-                        "message": "A valid date (YYYY-MM-DD) is required.",
-                    }
-                ]
-            }
+    ordering_fields = ()
+    default_ordering = ("-id",)
+
+    def apply_ordering(self, queryset):
+        return order_queryset(
+            self.request.query_params.get("ordering"),
+            queryset,
+            self.ordering_fields,
+            self.default_ordering,
         )
-    return parsed
 
 
 # --- Farmers ----------------------------------------------------------------
 
 
-class FarmerListCreate(ListCreateAPIView):
+class FarmerListCreate(OrderingMixin, ListCreateAPIView):
     serializer_class = FarmerSerializer
+    ordering_fields = ("id", "name", "phone", "village", "created_at")
+    default_ordering = ("id",)
 
     def get_queryset(self):
-        queryset = Farmer.objects.all().order_by("id")
+        queryset = Farmer.objects.all()
         search = self.request.query_params.get("search")
         if search:
             queryset = queryset.filter(
@@ -124,7 +137,7 @@ class FarmerListCreate(ListCreateAPIView):
                 | Q(phone__icontains=search)
                 | Q(village__icontains=search)
             )
-        return queryset
+        return self.apply_ordering(queryset)
 
 
 class FarmerDetailView(GenericAPIView):
@@ -148,56 +161,143 @@ class FarmerDetailView(GenericAPIView):
         return Response(FarmerSerializer(updated).data)
 
 
-class FarmerLedgerView(RetrieveAPIView):
-    serializer_class = FarmerLedgerSerializer
+def _ledger_events(ledger, event_type=None):
+    """Flatten the ledger snapshot into one typed, bounded event timeline.
+
+    Deliveries and correction notes, advances and payouts are merged into a
+    single list (each row tagged with ``event_type``) so the growing history is
+    the paginated collection itself -- never an unbounded list nested inside a
+    paginated wrapper. ``event_type`` optionally narrows the timeline to one kind.
+    """
+    events = []
+    for delivery in ledger.deliveries:
+        events.append(
+            {
+                "event_type": "CORRECTION" if delivery.is_correction else "DELIVERY",
+                "id": delivery.id,
+                "date": delivery.accounting_date,
+                "amount": delivery.signed_amount,
+                "delivery": delivery,
+                "advance": None,
+                "payout": None,
+            }
+        )
+    for advance in ledger.advances:
+        events.append(
+            {
+                "event_type": "ADVANCE",
+                "id": advance.id,
+                "date": advance.given_on,
+                "amount": advance.amount,
+                "delivery": None,
+                "advance": advance,
+                "payout": None,
+            }
+        )
+    for payout in ledger.payouts:
+        events.append(
+            {
+                "event_type": "PAYOUT",
+                "id": payout.id,
+                "date": payout.week_start,
+                "amount": payout.net_amount,
+                "delivery": None,
+                "advance": None,
+                "payout": payout,
+            }
+        )
+    if event_type is not None:
+        events = [event for event in events if event["event_type"] == event_type]
+    return events
+
+
+class FarmerLedgerView(GenericAPIView):
+    """A bounded page of ledger events, plus the account-level summary.
+
+    The event timeline is the paginated collection (default 20, max 100 events;
+    ``from``/``to`` are inclusive bounds on each event's business date and
+    ``event_type`` filters to DELIVERY/CORRECTION/ADVANCE/PAYOUT). The summary
+    (balance, totals, reconciliation) always covers the full history, so a page
+    never changes the account balance.
+    """
+
+    serializer_class = LedgerPageSerializer
 
     @extend_schema(
         parameters=[
             OpenApiParameter(
                 "from",
                 type=str,
-                description="ISO date; lower bound on accounting date (inclusive).",
+                description="ISO date; inclusive lower bound on the event date.",
             ),
             OpenApiParameter(
                 "to",
                 type=str,
-                description="ISO date; upper bound on accounting date (inclusive).",
+                description="ISO date; inclusive upper bound on the event date.",
+            ),
+            OpenApiParameter(
+                "event_type",
+                type=str,
+                description="DELIVERY, CORRECTION, ADVANCE or PAYOUT.",
+            ),
+            OpenApiParameter(
+                "ordering",
+                type=str,
+                description=(
+                    "One of: amount, date, event_type, id "
+                    "(prefix '-' to reverse)."
+                ),
             ),
         ],
-        responses=FarmerLedgerSerializer,
+        responses=LedgerPageSerializer,
     )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def get_object(self):
-        farmer = _get_or_not_found(
-            Farmer, self.kwargs["pk"], FarmerNotFound, "Farmer"
-        )
-        params = self.request.query_params
-        since = _date(params["from"], "from") if "from" in params else None
-        until = _date(params["to"], "to") if "to" in params else None
-        if since is not None and until is not None and since > until:
+    def get(self, request, pk):
+        farmer = _get_or_not_found(Farmer, pk, FarmerNotFound, "Farmer")
+        params = request.query_params
+        since, until = date_range(params)
+        event_type = params.get("event_type")
+        if event_type is not None and event_type not in LEDGER_EVENT_TYPES:
             raise DRFValidationError(
                 {
-                    "from": [
-                        {
-                            "code": "invalid",
-                            "message": "'from' must not be after 'to'.",
-                        }
+                    "event_type": [
+                        {"code": "invalid", "message": "Unknown ledger event type."}
                     ]
                 }
             )
-        return build_farmer_ledger(farmer, since=since, until=until)
+
+        ledger = build_farmer_ledger(farmer, since=since, until=until)
+        events = order_events(
+            params.get("ordering"),
+            _ledger_events(ledger, event_type),
+            LEDGER_ORDERING_FIELDS,
+            LEDGER_DEFAULT_ORDERING,
+        )
+
+        page = self.paginate_queryset(events)
+        results = LedgerEventSerializer(page, many=True).data
+        return Response(
+            OrderedDict(
+                [
+                    ("count", self.paginator.page.paginator.count),
+                    ("next", self.paginator.get_next_link()),
+                    ("previous", self.paginator.get_previous_link()),
+                    ("summary", LedgerSummarySerializer(ledger).data),
+                    ("results", results),
+                ]
+            )
+        )
 
 
 # --- Crops and grades -------------------------------------------------------
 
 
-class CropListCreate(ListCreateAPIView):
+class CropListCreate(OrderingMixin, ListCreateAPIView):
     serializer_class = CropSerializer
+    ordering_fields = ("id", "name", "created_at")
+    default_ordering = ("name", "id")
 
     def get_queryset(self):
-        return Crop.objects.prefetch_related("grades").order_by("name")
+        return self.apply_ordering(Crop.objects.prefetch_related("grades"))
 
     @extend_schema(request=CropWriteSerializer, responses=CropSerializer)
     def create(self, request, *args, **kwargs):
@@ -226,36 +326,38 @@ class CropDetailView(GenericAPIView):
         return Response(CropSerializer(updated).data)
 
 
-class CropGradeList(ListAPIView):
+class CropGradeList(OrderingMixin, ListAPIView):
     serializer_class = CropGradeSerializer
+    ordering_fields = ("id", "code", "crop_id")
+    default_ordering = ("crop_id", "code", "id")
 
     def get_queryset(self):
-        queryset = CropGrade.objects.select_related("crop").order_by("crop_id", "code")
+        queryset = CropGrade.objects.select_related("crop")
         crop = self.request.query_params.get("crop")
         if crop:
             crop_id = _int(crop, "crop")
             _get_or_not_found(Crop, crop_id, CropNotFound, "Crop")
             queryset = queryset.filter(crop_id=crop_id)
-        return queryset
+        return self.apply_ordering(queryset)
 
 
 # --- Prices -----------------------------------------------------------------
 
 
-class PriceListCreate(ListCreateAPIView):
+class PriceListCreate(OrderingMixin, ListCreateAPIView):
     serializer_class = PriceListEntrySerializer
+    ordering_fields = ("id", "effective_from", "price_per_kg", "crop_grade_id")
+    default_ordering = ("crop_grade_id", "-effective_from", "-id")
 
     def get_queryset(self):
-        queryset = PriceListEntry.objects.select_related("crop_grade__crop").order_by(
-            "crop_grade_id", "-effective_from", "-pk"
-        )
+        queryset = PriceListEntry.objects.select_related("crop_grade__crop")
         crop_grade = self.request.query_params.get("crop_grade")
         crop = self.request.query_params.get("crop")
         if crop_grade:
             queryset = queryset.filter(crop_grade_id=_int(crop_grade, "crop_grade"))
         if crop:
             queryset = queryset.filter(crop_grade__crop_id=_int(crop, "crop"))
-        return queryset
+        return self.apply_ordering(queryset)
 
     def create(self, request, *args, **kwargs):
         serializer = PriceEntryCreateSerializer(data=request.data)
@@ -287,19 +389,19 @@ class DeliveryPreviewView(GenericAPIView):
         return Response(DeliveryPreviewSerializer(preview).data)
 
 
-class DeliveryListCreate(ListCreateAPIView):
+class DeliveryListCreate(OrderingMixin, ListCreateAPIView):
     serializer_class = DeliveryReadSerializer
+    ordering_fields = ("id", "accounting_date", "delivered_on", "amount")
+    default_ordering = ("-accounting_date", "-id")
 
     def get_queryset(self):
         queryset = Delivery.objects.select_related(
             "farmer", "crop_grade", "payout"
-        ).order_by("-accounting_date", "-pk")
+        )
         params = self.request.query_params
         farmer = params.get("farmer")
         kind = params.get("kind")
         payout = params.get("payout")
-        start = params.get("from")
-        end = params.get("to")
         if farmer:
             queryset = queryset.filter(farmer_id=_int(farmer, "farmer"))
         if kind:
@@ -310,11 +412,12 @@ class DeliveryListCreate(ListCreateAPIView):
             queryset = queryset.filter(kind=kind)
         if payout:
             queryset = queryset.filter(payout_id=_int(payout, "payout"))
-        if start:
-            queryset = queryset.filter(accounting_date__gte=_date(start, "from"))
-        if end:
-            queryset = queryset.filter(accounting_date__lte=_date(end, "to"))
-        return queryset
+        since, until = date_range(params)
+        if since is not None:
+            queryset = queryset.filter(accounting_date__gte=since)
+        if until is not None:
+            queryset = queryset.filter(accounting_date__lte=until)
+        return self.apply_ordering(queryset)
 
     @extend_schema(request=DeliveryWriteSerializer, responses=DeliveryReadSerializer)
     def create(self, request, *args, **kwargs):
@@ -371,17 +474,23 @@ class DeliveryCorrectionsView(GenericAPIView):
         )
 
 
-class AdvanceListCreate(ListCreateAPIView):
+class AdvanceListCreate(OrderingMixin, ListCreateAPIView):
     serializer_class = AdvanceSerializer
+    ordering_fields = ("id", "given_on", "amount", "created_at")
+    default_ordering = ("-given_on", "-id")
 
     def get_queryset(self):
-        queryset = Advance.objects.select_related("farmer").order_by(
-            "-given_on", "-pk"
-        )
-        farmer = self.request.query_params.get("farmer")
+        queryset = Advance.objects.select_related("farmer")
+        params = self.request.query_params
+        farmer = params.get("farmer")
         if farmer:
             queryset = queryset.filter(farmer_id=_int(farmer, "farmer"))
-        return queryset
+        since, until = date_range(params)
+        if since is not None:
+            queryset = queryset.filter(given_on__gte=since)
+        if until is not None:
+            queryset = queryset.filter(given_on__lte=until)
+        return self.apply_ordering(queryset)
 
     @extend_schema(request=AdvanceCreateSerializer, responses=AdvanceSerializer)
     def create(self, request, *args, **kwargs):
@@ -416,13 +525,15 @@ class AdvanceReconciliationView(RetrieveAPIView):
 # --- Corrections (credit / debit notes) -------------------------------------
 
 
-class CorrectionListCreate(ListCreateAPIView):
+class CorrectionListCreate(OrderingMixin, ListCreateAPIView):
     serializer_class = CorrectionReadSerializer
+    ordering_fields = ("id", "accounting_date", "delivered_on", "amount")
+    default_ordering = ("-accounting_date", "-id")
 
     def get_queryset(self):
         queryset = Delivery.objects.filter(kind__in=GRADE_NOTE_KINDS).select_related(
             "farmer", "original_delivery", "payout"
-        ).order_by("-accounting_date", "-pk")
+        )
         params = self.request.query_params
         farmer = params.get("farmer")
         kind = params.get("kind")
@@ -439,7 +550,12 @@ class CorrectionListCreate(ListCreateAPIView):
             queryset = queryset.filter(
                 original_delivery_id=_int(original, "original_delivery")
             )
-        return queryset
+        since, until = date_range(params)
+        if since is not None:
+            queryset = queryset.filter(accounting_date__gte=since)
+        if until is not None:
+            queryset = queryset.filter(accounting_date__lte=until)
+        return self.apply_ordering(queryset)
 
     @extend_schema(
         request=CorrectionCreateSerializer, responses=CorrectionReadSerializer
@@ -502,20 +618,19 @@ class PayoutGenerateView(GenericAPIView):
         )
 
 
-class PayoutList(ListAPIView):
+class PayoutList(OrderingMixin, ListAPIView):
     serializer_class = PayoutSerializer
+    ordering_fields = ("id", "week_start", "status", "net_amount")
+    default_ordering = ("-week_start", "-id")
 
     def get_queryset(self):
-        queryset = (
-            Payout.objects.select_related("farmer")
-            .prefetch_related("deliveries")
-            .order_by("-week_start", "-pk")
+        queryset = Payout.objects.select_related("farmer").prefetch_related(
+            "deliveries"
         )
         params = self.request.query_params
         farmer = params.get("farmer")
         payout_status = params.get("status")
-        start = params.get("from")
-        end = params.get("to")
+        week = params.get("week")
         if farmer:
             queryset = queryset.filter(farmer_id=_int(farmer, "farmer"))
         if payout_status:
@@ -524,11 +639,15 @@ class PayoutList(ListAPIView):
                     {"status": [{"code": "invalid", "message": "Unknown status."}]}
                 )
             queryset = queryset.filter(status=payout_status)
-        if start:
-            queryset = queryset.filter(week_start__gte=_date(start, "from"))
-        if end:
-            queryset = queryset.filter(week_start__lte=_date(end, "to"))
-        return queryset
+        if week:
+            monday, _sunday = week_bounds(_date(week, "week"))
+            queryset = queryset.filter(week_start=monday)
+        since, until = date_range(params)
+        if since is not None:
+            queryset = queryset.filter(week_start__gte=since)
+        if until is not None:
+            queryset = queryset.filter(week_start__lte=until)
+        return self.apply_ordering(queryset)
 
 
 class PayoutDetail(RetrieveAPIView):
