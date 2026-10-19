@@ -187,7 +187,9 @@ def test_reseeding_preserves_frozen_snapshots_and_balances(seed):
 
     delivery.refresh_from_db()
     payout.refresh_from_db()
-    assert {field: getattr(delivery, field) for field in frozen_delivery} == frozen_delivery
+    assert {
+        field: getattr(delivery, field) for field in frozen_delivery
+    } == frozen_delivery
     assert (
         payout.status,
         payout.gross_amount,

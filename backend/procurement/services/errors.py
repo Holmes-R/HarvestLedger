@@ -75,8 +75,7 @@ class AdvanceReconciliationError(ServiceError):
 
     code = "advance_reconciliation_failed"
     default_message = (
-        "Recorded advances and recoveries do not match the stored outstanding "
-        "balance."
+        "Recorded advances and recoveries do not match the stored outstanding balance."
     )
 
 

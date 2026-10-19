@@ -204,9 +204,7 @@ def test_create_price_entry_distinguishes_missing_crop_and_grade_records(grade):
 
     missing_grade = CropGrade(pk=99999999, crop=grade.crop, code="B")
     with pytest.raises(ServiceError) as grade_error:
-        pricing.create_price_entry(
-            grade.crop, missing_grade, "1.00", date(2026, 1, 1)
-        )
+        pricing.create_price_entry(grade.crop, missing_grade, "1.00", date(2026, 1, 1))
     assert grade_error.value.code == "crop_grade_not_found"
     assert PriceListEntry.objects.count() == 0
 
@@ -244,7 +242,9 @@ def test_duplicate_effective_date_is_rejected(grade):
     with pytest.raises(pricing.PriceAlreadyExists):
         pricing.create_price_entry(grade.crop, "A", "99.00", date(2026, 1, 1))
 
-    rows = PriceListEntry.objects.filter(crop_grade=grade, effective_from=date(2026, 1, 1))
+    rows = PriceListEntry.objects.filter(
+        crop_grade=grade, effective_from=date(2026, 1, 1)
+    )
     assert rows.count() == 1
     assert rows.get().price_per_kg == Decimal("24.50")  # never re-priced
 

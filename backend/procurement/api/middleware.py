@@ -86,9 +86,7 @@ REVIEW_KEY_HEADER = "X-Review-Key"
 
 DISABLED_MESSAGE = "The reviewer clock aid is disabled."
 UNAUTHORIZED_MESSAGE = "A valid review key is required to change the business clock."
-INVALID_MESSAGE = (
-    "The X-Test-Clock header must be a timezone-aware ISO-8601 timestamp."
-)
+INVALID_MESSAGE = "The X-Test-Clock header must be a timezone-aware ISO-8601 timestamp."
 
 
 def _reject(request, code, message, status_code):
@@ -177,4 +175,3 @@ class ReviewClockMiddleware:
 
         with use_clock(FrozenClock(instant)):
             return self.get_response(request)
-

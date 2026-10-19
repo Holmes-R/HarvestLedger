@@ -97,7 +97,8 @@ def test_api01_valid_requests_for_every_core_endpoint(
     assert created.status_code == 201
     assert Farmer.objects.filter(pk=created.json()["id"]).exists()
     assert (
-        api_client.get(reverse("api:farmer-detail", args=[farmer_id])).status_code == 200
+        api_client.get(reverse("api:farmer-detail", args=[farmer_id])).status_code
+        == 200
     )
     patched = api_client.patch(
         reverse("api:farmer-detail", args=[farmer_id]),
@@ -198,7 +199,8 @@ def test_api01_valid_requests_for_every_core_endpoint(
     payout_id = generated.json()["payout"]["id"]
     assert api_client.get(reverse("api:payout-list")).status_code == 200
     assert (
-        api_client.get(reverse("api:payout-detail", args=[payout_id])).status_code == 200
+        api_client.get(reverse("api:payout-detail", args=[payout_id])).status_code
+        == 200
     )
     finalised = api_client.post(reverse("api:payout-finalise", args=[payout_id]))
     assert finalised.status_code == 200
@@ -224,7 +226,9 @@ def test_api01_valid_requests_for_every_core_endpoint(
     correction_id = correction.json()["id"]
     assert correction.json()["kind"] == "CREDIT_NOTE"
     assert (
-        api_client.get(reverse("api:correction-detail", args=[correction_id])).status_code
+        api_client.get(
+            reverse("api:correction-detail", args=[correction_id])
+        ).status_code
         == 200
     )
     nested = api_client.post(
@@ -246,16 +250,24 @@ def test_api01_read_only_routes_reject_mutations(api_client, farmer, grade, pric
     assert recorded.status_code == 201
     delivery_id = recorded.json()["id"]
     assert (
-        api_client.post(reverse("api:payout-list"), {}, format="json").status_code == 405
-    )
-    assert api_client.patch(reverse("api:payout-detail", args=[9999])).status_code == 405
-    assert (
-        api_client.delete(reverse("api:delivery-detail", args=[delivery_id])).status_code
+        api_client.post(reverse("api:payout-list"), {}, format="json").status_code
         == 405
     )
-    assert api_client.patch(reverse("api:advance-detail", args=[9999])).status_code == 405
     assert (
-        api_client.delete(reverse("api:farmer-detail", args=[farmer.id])).status_code == 405
+        api_client.patch(reverse("api:payout-detail", args=[9999])).status_code == 405
+    )
+    assert (
+        api_client.delete(
+            reverse("api:delivery-detail", args=[delivery_id])
+        ).status_code
+        == 405
+    )
+    assert (
+        api_client.patch(reverse("api:advance-detail", args=[9999])).status_code == 405
+    )
+    assert (
+        api_client.delete(reverse("api:farmer-detail", args=[farmer.id])).status_code
+        == 405
     )
 
 
@@ -330,7 +342,9 @@ def test_api03_unknown_resources_are_documented_not_found(
         == "crop_not_found"
     )
     for route in ("api:delivery-detail", "api:advance-detail", "api:correction-detail"):
-        assert _error(api_client.get(reverse(route, args=[9999])))["code"] == "not_found"
+        assert (
+            _error(api_client.get(reverse(route, args=[9999])))["code"] == "not_found"
+        )
     assert (
         _error(api_client.get(reverse("api:payout-detail", args=[9999])))["code"]
         == "not_found"
@@ -340,7 +354,9 @@ def test_api03_unknown_resources_are_documented_not_found(
         == "farmer_not_found"
     )
     assert (
-        _error(api_client.get(reverse("api:advance-reconciliation", args=[9999])))["code"]
+        _error(api_client.get(reverse("api:advance-reconciliation", args=[9999])))[
+            "code"
+        ]
         == "farmer_not_found"
     )
 
@@ -515,11 +531,11 @@ def test_api06_preview_mutates_nothing(api_client, farmer, grade, price):
 
 
 @pytest.mark.django_db
-def test_api07_pagination_filtering_and_invalid_errors(api_client, farmer, grade, price):
+def test_api07_pagination_filtering_and_invalid_errors(
+    api_client, farmer, grade, price
+):
     for index in range(25):
-        _record(
-            api_client, farmer, grade, delivered_on=f"2026-01-{5 + index % 20:02d}"
-        )
+        _record(api_client, farmer, grade, delivered_on=f"2026-01-{5 + index % 20:02d}")
 
     first_page = api_client.get(reverse("api:delivery-list")).json()
     assert first_page["count"] == 25
@@ -580,7 +596,9 @@ def test_api08_reviewer_clock_valid_and_rejected_scenarios(
     assert off.status_code == 403
     assert _error(off)["code"] == "review_clock_disabled"
 
-    unauthorised = _preview_with_clock(api_client, farmer, grade, clock=CLOCK, key="wrong")
+    unauthorised = _preview_with_clock(
+        api_client, farmer, grade, clock=CLOCK, key="wrong"
+    )
     assert unauthorised.status_code == 403
     assert _error(unauthorised)["code"] == "review_clock_unauthorized"
 
@@ -670,7 +688,9 @@ def test_api10_unexpected_failure_500_correlated_log_and_rollback(
     assert payload["request_id"] == response["X-Request-ID"]
     assert payload["status"] == 500
     assert payload["exception"] == "RuntimeError"
-    assert payload["exception_message"] == "boom-after-financial-write"
+    assert "exception_message" not in payload
+    assert "traceback" not in payload
+    assert payload["frames"]
 
     farmer.refresh_from_db()
     assert farmer.outstanding_advance == Decimal("500.00")

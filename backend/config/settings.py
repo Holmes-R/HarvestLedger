@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 import environ
+from corsheaders.defaults import default_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,7 +27,7 @@ environ.Env.read_env(BASE_DIR / ".env")
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-wzgtff=$00qm=)f-4xw8vnzqh+b+mz810$1ois_(c(^2j&ujb4'
+SECRET_KEY = "django-insecure-wzgtff=$00qm=)f-4xw8vnzqh+b+mz810$1ois_(c(^2j&ujb4"
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -37,49 +38,49 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
-    'corsheaders',
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'rest_framework',
-    'drf_spectacular',
-    'procurement',
+    "corsheaders",
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "rest_framework",
+    "drf_spectacular",
+    "procurement",
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'procurement.api.middleware.RequestIDMiddleware',
-    'procurement.api.middleware.ReviewClockMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "procurement.api.middleware.RequestIDMiddleware",
+    "procurement.api.middleware.ReviewClockMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = 'config.urls'
+ROOT_URLCONF = "config.urls"
 
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
 
-WSGI_APPLICATION = 'config.wsgi.application'
+WSGI_APPLICATION = "config.wsgi.application"
 
 
 # Database
@@ -111,16 +112,16 @@ DATABASES = {
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
 
@@ -128,11 +129,11 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = "en-us"
 
 # Business timezone. Instants are stored in UTC (USE_TZ); IST is only used to
 # derive *business dates* (delivery accounting dates, payout weeks).
-TIME_ZONE = 'Asia/Kolkata'
+TIME_ZONE = "Asia/Kolkata"
 
 USE_I18N = True
 
@@ -142,12 +143,12 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = "static/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 # Django REST Framework (M3 API)
@@ -230,7 +231,7 @@ SPECTACULAR_SETTINGS = {
         "``400``.\n\n"
         "### Error envelope and status codes\n"
         "Every error uses one envelope: "
-        "``{\"error\": {\"code\", \"message\", \"details\", \"request_id\"}}``. "
+        '``{"error": {"code", "message", "details", "request_id"}}``. '
         "A request id (client-supplied when it matches "
         "``^[A-Za-z0-9._:-]{8,128}$``, otherwise generated) is echoed in the "
         "body and the ``X-Request-ID`` header and used in structured logs. "
@@ -242,7 +243,7 @@ SPECTACULAR_SETTINGS = {
         "### Weekly payouts\n"
         "``POST /payouts/generate/`` returns ``201`` with the created or "
         "extended **DRAFT** statement, or ``200`` with "
-        "``{\"payout\": null, \"reason\": \"NO_ELIGIBLE_DELIVERIES\"}`` when the "
+        '``{"payout": null, "reason": "NO_ELIGIBLE_DELIVERIES"}`` when the '
         "week has no eligible deliveries -- a successful no-op, no payout is "
         "invented. Finalisation (``/finalise/``) freezes the statement and "
         "applies advance recovery; ``/mark-paid/`` records payment. Both are "
@@ -278,9 +279,7 @@ SPECTACULAR_SETTINGS = {
         },
         {
             "name": "Payouts",
-            "description": (
-                "Weekly payout generation, finalisation and payment."
-            ),
+            "description": ("Weekly payout generation, finalisation and payment."),
         },
     ],
     # Give the shared choice sets stable, descriptive component names and
@@ -297,11 +296,16 @@ SPECTACULAR_SETTINGS = {
 # comma-separated CORS_ALLOWED_ORIGINS environment variable when needed.
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.environ.get(
-        "CORS_ALLOWED_ORIGINS", "http://localhost:5173"
-    ).split(",")
+    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(
+        ","
+    )
     if origin.strip()
 ]
+
+# Extend the package defaults for the documented API/request-clock headers.
+# Origins remain explicit; this does not permit arbitrary headers or callers.
+CORS_ALLOW_HEADERS = (*default_headers, "x-request-id", "x-test-clock", "x-review-key")
+CORS_EXPOSE_HEADERS = ("x-request-id",)
 
 # Reviewer clock aid (demo-only). See procurement/api/middleware.py and README
 # section 10. When ALLOW_REVIEW_CLOCK is true and the caller presents a matching

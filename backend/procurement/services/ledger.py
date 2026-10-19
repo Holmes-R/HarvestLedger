@@ -191,9 +191,7 @@ class FarmerLedger:
     def earnings_identity_holds(self) -> bool:
         """No delivery is counted twice (once itself and once via its payout)."""
         return (
-            self.settled_earnings
-            + self.draft_projection
-            + self.unassigned_earnings
+            self.settled_earnings + self.draft_projection + self.unassigned_earnings
             == self.total_recorded_amount
         )
 
@@ -229,8 +227,9 @@ def _within(value, since, until) -> bool:
     return not (until is not None and value > until)
 
 
-def build_farmer_ledger(farmer: Farmer, *, since: date | None = None,
-                        until: date | None = None) -> FarmerLedger:
+def build_farmer_ledger(
+    farmer: Farmer, *, since: date | None = None, until: date | None = None
+) -> FarmerLedger:
     """Return the read-only ledger snapshot for ``farmer``.
 
     Reads run in one ``transaction.atomic()`` block so the snapshot is

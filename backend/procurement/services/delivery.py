@@ -202,8 +202,7 @@ def _validate_delivered_on(delivered_on: date, today: date) -> None:
         )
     if delivered_on > today:
         raise ValidationError(
-            f"delivered_on {delivered_on} is in the future "
-            f"(business date {today}).",
+            f"delivered_on {delivered_on} is in the future (business date {today}).",
             code="future_delivery_date",
         )
 
@@ -236,8 +235,10 @@ def _build_preview(
     moisture = as_decimal(moisture_percent, "moisture_percent")
 
     crop = crop_grade.crop
-    entry = price_entry if price_entry is not None else resolve_price(
-        crop_grade, delivered_on
+    entry = (
+        price_entry
+        if price_entry is not None
+        else resolve_price(crop_grade, delivered_on)
     )
     breakdown = calculate_breakdown(
         gross_weight_kg=gross,
@@ -412,9 +413,7 @@ def edit_delivery(
             )
 
         new_grade = crop_grade if crop_grade is not None else locked.crop_grade
-        new_date = (
-            delivered_on if delivered_on is not None else locked.delivered_on
-        )
+        new_date = delivered_on if delivered_on is not None else locked.delivered_on
         # Preserve the frozen price unless the pricing basis changed.
         basis_changed = (
             new_grade.pk != locked.crop_grade_id or new_date != locked.delivered_on

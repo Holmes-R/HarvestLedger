@@ -114,9 +114,7 @@ def _resolve_allowed_grade(crop: Crop, grade: CropGrade | str) -> CropGrade:
     code = grade
     resolved = CropGrade.objects.filter(crop=crop, code=code).first()
     if resolved is None:
-        raise GradeNotAllowed(
-            f"Grade '{code}' is not allowed for crop '{crop.name}'."
-        )
+        raise GradeNotAllowed(f"Grade '{code}' is not allowed for crop '{crop.name}'.")
     return resolved
 
 

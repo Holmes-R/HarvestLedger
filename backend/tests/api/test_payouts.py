@@ -203,9 +203,7 @@ def test_recovery_is_capped_at_thirty_percent_rounded_to_the_cent(
     _record_delivery(api_client, farmer, grade, gross_weight_kg="100.050")
     payout_id = _payout_id(api_client, farmer)
 
-    body = api_client.post(
-        reverse("api:payout-finalise", args=[payout_id])
-    ).json()
+    body = api_client.post(reverse("api:payout-finalise", args=[payout_id])).json()
     assert body["gross_amount"] == "100.05"
     assert body["advance_deduction"] == "30.01"
     assert body["net_amount"] == "70.04"
@@ -279,15 +277,11 @@ def test_finalised_payout_is_financially_immutable(api_client, farmer, grade, pr
     )
     _record_delivery(api_client, farmer, grade)
     payout_id = _payout_id(api_client, farmer)
-    finalised = api_client.post(
-        reverse("api:payout-finalise", args=[payout_id])
-    ).json()
+    finalised = api_client.post(reverse("api:payout-finalise", args=[payout_id])).json()
     farmer.refresh_from_db()
     balance = str(farmer.outstanding_advance)
 
-    paid = api_client.post(
-        reverse("api:payout-mark-paid", args=[payout_id])
-    ).json()
+    paid = api_client.post(reverse("api:payout-mark-paid", args=[payout_id])).json()
     for field in ("gross_amount", "advance_deduction", "net_amount"):
         assert paid[field] == finalised[field], field
     assert paid["net_amount"] == "1950.00"
@@ -296,15 +290,20 @@ def test_finalised_payout_is_financially_immutable(api_client, farmer, grade, pr
 
     # There is no generic mutation route: a payout is changed only by the two
     # explicit transitions above.
-    assert api_client.patch(
-        reverse("api:payout-detail", args=[payout_id]), {}, format="json"
-    ).status_code == 405
-    assert api_client.delete(
-        reverse("api:payout-detail", args=[payout_id])
-    ).status_code == 405
-    assert api_client.post(
-        reverse("api:payout-list"), {}, format="json"
-    ).status_code == 405
+    assert (
+        api_client.patch(
+            reverse("api:payout-detail", args=[payout_id]), {}, format="json"
+        ).status_code
+        == 405
+    )
+    assert (
+        api_client.delete(reverse("api:payout-detail", args=[payout_id])).status_code
+        == 405
+    )
+    assert (
+        api_client.post(reverse("api:payout-list"), {}, format="json").status_code
+        == 405
+    )
 
 
 @pytest.mark.django_db
@@ -407,9 +406,7 @@ def test_concurrent_finalisation_via_api_recovers_once(farmer, grade, price):
     def finalise(_index):
         try:
             client = APIClient()
-            response = client.post(
-                reverse("api:payout-finalise", args=[payout_id])
-            )
+            response = client.post(reverse("api:payout-finalise", args=[payout_id]))
             return response.status_code
         finally:
             connections.close_all()

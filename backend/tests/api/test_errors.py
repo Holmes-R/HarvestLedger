@@ -143,9 +143,7 @@ def test_domain_rejection_logs_warning_with_request_id(
             {**PAYLOAD, "farmer": farmer.id, "crop_grade": grade.id},
             format="json",
         )
-    record = next(
-        r for r in caplog.records if "request.rejected" in r.getMessage()
-    )
+    record = next(r for r in caplog.records if "request.rejected" in r.getMessage())
     assert record.levelno == logging.WARNING
     payload = json.loads(record.getMessage())
     assert payload["request_id"] == response["X-Request-ID"]
@@ -176,17 +174,19 @@ def test_unexpected_fault_logs_error_with_exception_info(
     assert record.levelno == logging.ERROR
     payload = json.loads(record.getMessage())
     assert payload["exception"] == "RuntimeError"
-    assert payload["exception_message"] == "boom-detail"
-    assert "traceback" in payload
+    assert "exception_message" not in payload
+    assert "traceback" not in payload
+    assert payload["frames"]
+    assert all(
+        set(frame) == {"module", "function", "line"} for frame in payload["frames"]
+    )
 
 
 @pytest.mark.django_db
 def test_logs_do_not_contain_body_credentials_or_banking(
     api_client, monkeypatch, caplog
 ):
-    monkeypatch.setattr(
-        logging.getLogger("procurement.api"), "propagate", True
-    )
+    monkeypatch.setattr(logging.getLogger("procurement.api"), "propagate", True)
     with caplog.at_level(logging.INFO):
         api_client.post(
             reverse("api:farmer-list"),
@@ -207,7 +207,9 @@ def test_logs_do_not_contain_body_credentials_or_banking(
 
 
 @pytest.mark.django_db
-def test_unexpected_financial_failure_rolls_back(api_client, farmer, grade, price, monkeypatch):
+def test_unexpected_financial_failure_rolls_back(
+    api_client, farmer, grade, price, monkeypatch
+):
     from django.db import transaction
 
     advances.post_advance(farmer, Decimal("500.00"), date(2026, 1, 5))
@@ -216,13 +218,11 @@ def test_unexpected_financial_failure_rolls_back(api_client, farmer, grade, pric
         {**PAYLOAD, "farmer": farmer.id, "crop_grade": grade.id},
         format="json",
     )
-    payout_id = (
-        api_client.post(
-            reverse("api:payout-generate"),
-            {"farmer": farmer.id, "week_start": "2026-01-05"},
-            format="json",
-        ).json()["payout"]["id"]
-    )
+    payout_id = api_client.post(
+        reverse("api:payout-generate"),
+        {"farmer": farmer.id, "week_start": "2026-01-05"},
+        format="json",
+    ).json()["payout"]["id"]
 
     def boom(payout):
         with transaction.atomic():

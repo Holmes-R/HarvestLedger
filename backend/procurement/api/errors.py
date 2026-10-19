@@ -20,10 +20,11 @@ banking references, review keys and query strings are never logged.
 """
 
 import logging
-import traceback
+from traceback import walk_tb
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.http import JsonResponse
 from rest_framework import status
 from rest_framework.exceptions import APIException
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -234,11 +235,19 @@ def _log(request, request_id, code, status_code, exc=None):
     }
     if status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
         fields["exception"] = type(exc).__name__ if exc is not None else None
-        fields["exception_message"] = str(exc) if exc is not None else None
-        fields["traceback"] = (
-            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        # Walk only code locations. Formatting an exception or traceback also
+        # formats its arguments and chained exceptions, which may contain secrets.
+        fields["frames"] = (
+            [
+                {
+                    "module": frame.f_globals.get("__name__", ""),
+                    "function": frame.f_code.co_name,
+                    "line": line,
+                }
+                for frame, line in walk_tb(exc.__traceback__)
+            ][-8:]
             if exc is not None
-            else None
+            else []
         )
         log_event(logging.ERROR, "request.failed", **fields)
     else:
@@ -247,9 +256,7 @@ def _log(request, request_id, code, status_code, exc=None):
 
 def _finalize(request, request_id, code, message, details, status_code, exc=None):
     _log(request, request_id, code, status_code, exc)
-    return Response(
-        _envelope(code, message, details, request_id), status=status_code
-    )
+    return Response(_envelope(code, message, details, request_id), status=status_code)
 
 
 def _wrap_drf_response(request, response, request_id):
@@ -268,9 +275,7 @@ def _wrap_drf_response(request, response, request_id):
         code, message, details = "invalid", "Request validation failed.", data
     else:
         code, message, details = "error", str(data), {}
-    return _finalize(
-        request, request_id, code, message, details, response.status_code
-    )
+    return _finalize(request, request_id, code, message, details, response.status_code)
 
 
 def api_exception_handler(exc, context):
@@ -330,4 +335,29 @@ def api_exception_handler(exc, context):
         {},
         status.HTTP_500_INTERNAL_SERVER_ERROR,
         exc,
+    )
+
+
+def api_route_not_found(request):
+    """Return the API envelope for paths unmatched by the versioned router."""
+    request_id = getattr(request, "request_id", None) or new_request_id()
+    log_event(
+        logging.WARNING,
+        "request.rejected",
+        request_id=request_id,
+        code="not_found",
+        status=status.HTTP_404_NOT_FOUND,
+        method=request.method,
+        path="/api/v1/<unmatched>/",
+        duration_ms=duration_ms(request),
+        record_ids={},
+    )
+    return JsonResponse(
+        _envelope(
+            "not_found",
+            "The requested API route was not found.",
+            {},
+            request_id,
+        ),
+        status=status.HTTP_404_NOT_FOUND,
     )

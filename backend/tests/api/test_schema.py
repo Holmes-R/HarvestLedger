@@ -94,18 +94,14 @@ def test_all_endpoints_are_documented(schema):
         "/api/v1/payouts/{id}/finalise/": {"post"},
         "/api/v1/payouts/{id}/mark-paid/": {"post"},
     }
-    documented = {
-        path: set(methods) for path, methods in schema["paths"].items()
-    }
+    documented = {path: set(methods) for path, methods in schema["paths"].items()}
     assert documented == expected
 
 
 @pytest.mark.django_db
 def test_error_envelope_is_documented(schema):
     schemas = schema["components"]["schemas"]
-    assert schemas["ErrorEnvelope"]["properties"]["error"]["$ref"].endswith(
-        "ErrorBody"
-    )
+    assert schemas["ErrorEnvelope"]["properties"]["error"]["$ref"].endswith("ErrorBody")
     assert {"code", "message", "details", "request_id"} <= set(
         schemas["ErrorBody"]["properties"]
     )
@@ -135,9 +131,9 @@ def test_shared_enums_are_named_components(schema):
 @pytest.mark.django_db
 def test_delivery_write_contract_is_documented(schema):
     op = _op(schema, "/api/v1/deliveries/", "post")
-    assert op["requestBody"]["content"]["application/json"]["schema"][
-        "$ref"
-    ].endswith("DeliveryWriteRequest")
+    assert op["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "DeliveryWriteRequest"
+    )
     assert _ref(op, "201", "response").endswith("DeliveryRead")
 
 
@@ -155,9 +151,7 @@ def test_preview_documents_calculated_business_date(schema):
 def test_reviewer_clock_headers_are_documented(schema):
     op = _op(schema, "/api/v1/deliveries/preview/", "post")
     headers = {
-        param["name"]
-        for param in op.get("parameters", [])
-        if param["in"] == "header"
+        param["name"] for param in op.get("parameters", []) if param["in"] == "header"
     }
     assert {"X-Test-Clock", "X-Review-Key"} <= headers
 
@@ -165,9 +159,9 @@ def test_reviewer_clock_headers_are_documented(schema):
 @pytest.mark.django_db
 def test_payout_generation_documents_both_success_outcomes(schema):
     op = _op(schema, "/api/v1/payouts/generate/", "post")
-    assert op["requestBody"]["content"]["application/json"]["schema"][
-        "$ref"
-    ].endswith("PayoutGenerateRequest")
+    assert op["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "PayoutGenerateRequest"
+    )
     assert _ref(op, "201", "response").endswith("PayoutGeneration")
     assert _ref(op, "200", "response").endswith("PayoutGeneration")
     empty = op["responses"]["200"]["content"]["application/json"]["examples"]
@@ -212,9 +206,7 @@ def test_list_endpoints_document_ordering(schema):
     ):
         op = _op(schema, path, "get")
         ordering = [
-            param
-            for param in op.get("parameters", [])
-            if param["name"] == "ordering"
+            param for param in op.get("parameters", []) if param["name"] == "ordering"
         ]
         assert ordering, path
         assert "tie-breaker" in ordering[0]["description"]

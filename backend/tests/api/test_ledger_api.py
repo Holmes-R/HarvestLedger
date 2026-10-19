@@ -101,7 +101,9 @@ def test_ledger_missing_farmer_is_not_found(api_client):
 
 
 @pytest.mark.django_db
-def test_ledger_totals_reconcile_without_double_counting(api_client, farmer, grade, price):
+def test_ledger_totals_reconcile_without_double_counting(
+    api_client, farmer, grade, price
+):
     _seed_two_weeks(farmer, grade)
 
     body = api_client.get(reverse("api:farmer-ledger", args=[farmer.id])).json()
@@ -141,7 +143,9 @@ def test_ledger_separates_event_types(api_client, farmer, grade, price):
     assert [e["amount"] for e in by_type["ADVANCE"]] == ["200.00", "500.00"]
     assert len(by_type["DELIVERY"]) == 2
     assert all(e["delivery"]["kind"] == "PROCUREMENT" for e in by_type["DELIVERY"])
-    assert all(e["advance"] is None and e["payout"] is None for e in by_type["DELIVERY"])
+    assert all(
+        e["advance"] is None and e["payout"] is None for e in by_type["DELIVERY"]
+    )
     assert len(by_type["PAYOUT"]) == 2
     assert isinstance(body["summary"]["outstanding_advance"], str)
 

@@ -86,9 +86,7 @@ class ProtectedFieldMixin:
         data = self.initial_data
         if hasattr(data, "keys"):
             writable = {
-                name
-                for name, field in self.fields.items()
-                if not field.read_only
+                name for name, field in self.fields.items() if not field.read_only
             }
             for key in data:
                 if key in self.protected_fields:
@@ -183,9 +181,7 @@ class CropSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(CropGradeRefSerializer(many=True))
     def get_allowed_grades(self, crop):
-        return CropGradeRefSerializer(
-            crop.grades.order_by("code"), many=True
-        ).data
+        return CropGradeRefSerializer(crop.grades.order_by("code"), many=True).data
 
 
 class CropGradeSerializer(serializers.ModelSerializer):
@@ -206,9 +202,7 @@ def _clean_grade_codes(codes):
             raise serializers.ValidationError(
                 {
                     "allowed_grades": [
-                        ErrorDetail(
-                            "Grade codes must be non-blank.", code="invalid"
-                        )
+                        ErrorDetail("Grade codes must be non-blank.", code="invalid")
                     ]
                 }
             )
@@ -257,9 +251,7 @@ class CropWriteSerializer(ProtectedFieldMixin, serializers.Serializer):
     the stored invariant ``0 <= moisture_threshold <= max_moisture <= 100``.
     """
 
-    name = serializers.CharField(
-        max_length=Crop._meta.get_field("name").max_length
-    )
+    name = serializers.CharField(max_length=Crop._meta.get_field("name").max_length)
     moisture_threshold = model_decimal(Crop, "moisture_threshold")
     max_moisture = model_decimal(Crop, "max_moisture")
     allowed_grades = serializers.ListField(
@@ -277,11 +269,11 @@ class CropWriteSerializer(ProtectedFieldMixin, serializers.Serializer):
             "moisture_threshold",
             getattr(instance, "moisture_threshold", None),
         )
-        maximum = attrs.get(
-            "max_moisture", getattr(instance, "max_moisture", None)
-        )
-        if threshold is not None and maximum is not None and not (
-            0 <= threshold <= maximum <= 100
+        maximum = attrs.get("max_moisture", getattr(instance, "max_moisture", None))
+        if (
+            threshold is not None
+            and maximum is not None
+            and not (0 <= threshold <= maximum <= 100)
         ):
             raise serializers.ValidationError(
                 {
@@ -336,12 +328,8 @@ class CropWriteSerializer(ProtectedFieldMixin, serializers.Serializer):
 
 
 class FarmerSerializer(ProtectedFieldMixin, serializers.ModelSerializer):
-    outstanding_advance = model_decimal(
-        Farmer, "outstanding_advance", read_only=True
-    )
-    bank_reference = serializers.CharField(
-        required=False, allow_blank=True, default=""
-    )
+    outstanding_advance = model_decimal(Farmer, "outstanding_advance", read_only=True)
+    bank_reference = serializers.CharField(required=False, allow_blank=True, default="")
     protected_fields = ("id", "outstanding_advance", "created_at")
 
     class Meta:
@@ -576,12 +564,8 @@ class DeliveryEditSerializer(ProtectedFieldMixin, serializers.Serializer):
     crop_grade = CropGradeReferenceField(
         queryset=CropGrade.objects.all(), required=False
     )
-    gross_weight_kg = model_decimal(
-        Delivery, "gross_weight_kg", required=False
-    )
-    moisture_percent = model_decimal(
-        Delivery, "moisture_percent", required=False
-    )
+    gross_weight_kg = model_decimal(Delivery, "gross_weight_kg", required=False)
+    moisture_percent = model_decimal(Delivery, "moisture_percent", required=False)
     protected_fields = _DELIVERY_PROTECTED
 
     def update(self, instance, validated_data):
@@ -604,9 +588,7 @@ class LedgerDeliverySerializer(serializers.Serializer):
         read_only=True, allow_null=True, **_MOISTURE
     )
     net_kg = serializers.DecimalField(read_only=True, allow_null=True, **_DERIVED)
-    applied_price = serializers.DecimalField(
-        read_only=True, allow_null=True, **_RATE
-    )
+    applied_price = serializers.DecimalField(read_only=True, allow_null=True, **_RATE)
     amount = serializers.DecimalField(read_only=True, allow_null=True, **_MONEY)
     payout = serializers.IntegerField(
         source="payout_id", read_only=True, allow_null=True

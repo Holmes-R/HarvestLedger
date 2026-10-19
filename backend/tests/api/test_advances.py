@@ -76,9 +76,7 @@ def test_reconciliation_endpoint(api_client, farmer):
         {"farmer": farmer.id, "amount": "500.00", "given_on": "2026-01-05"},
         format="json",
     )
-    response = api_client.get(
-        reverse("api:advance-reconciliation", args=[farmer.id])
-    )
+    response = api_client.get(reverse("api:advance-reconciliation", args=[farmer.id]))
     assert response.status_code == 200
     body = response.json()
     assert body["total_advances"] == "500.00"

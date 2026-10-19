@@ -110,5 +110,3 @@ class PayoutAdmin(FinancialReadOnlyAdmin):
     )
     list_filter = ("status",)
     search_fields = ("farmer__name",)
-
-

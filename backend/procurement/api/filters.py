@@ -56,12 +56,10 @@ def date_range(params, *, start="from", end="to"):
 
 def _selected_ordering(raw, allowed):
     direction = "-" if raw.startswith("-") else ""
-    field = raw[len(direction):]
+    field = raw[len(direction) :]
     if field not in allowed:
         options = ", ".join(sorted(allowed))
-        raise _invalid(
-            "ordering", f"Ordering must be one of: {options}."
-        )
+        raise _invalid("ordering", f"Ordering must be one of: {options}.")
     return direction, field
 
 

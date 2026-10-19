@@ -162,8 +162,12 @@ def test_blank_required_char_field(api_client):
 def test_non_iso_date_is_rejected(api_client, farmer, grade, price):
     response = api_client.post(
         reverse("api:delivery-list"),
-        {**DELIVERY, "farmer": farmer.id, "crop_grade": grade.id,
-         "delivered_on": "05/01/2026"},
+        {
+            **DELIVERY,
+            "farmer": farmer.id,
+            "crop_grade": grade.id,
+            "delivered_on": "05/01/2026",
+        },
         format="json",
     )
     assert response.status_code == 400
@@ -171,11 +175,17 @@ def test_non_iso_date_is_rejected(api_client, farmer, grade, price):
 
 
 @pytest.mark.django_db
-def test_over_precise_weight_is_rejected_before_service(api_client, farmer, grade, price):
+def test_over_precise_weight_is_rejected_before_service(
+    api_client, farmer, grade, price
+):
     response = api_client.post(
         reverse("api:delivery-list"),
-        {**DELIVERY, "farmer": farmer.id, "crop_grade": grade.id,
-         "gross_weight_kg": "100.0001"},
+        {
+            **DELIVERY,
+            "farmer": farmer.id,
+            "crop_grade": grade.id,
+            "gross_weight_kg": "100.0001",
+        },
         format="json",
     )
     assert response.status_code == 400

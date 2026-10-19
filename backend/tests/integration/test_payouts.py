@@ -133,9 +133,7 @@ def test_payout_aggregate_overflow_does_not_assign_deliveries(farmer, grade):
     first = _model_delivery(
         farmer, grade, WEEK_1_START, amount=Decimal("999999999999.99")
     )
-    second = _model_delivery(
-        farmer, grade, WEEK_1_START, amount=Decimal("0.01")
-    )
+    second = _model_delivery(farmer, grade, WEEK_1_START, amount=Decimal("0.01"))
 
     with pytest.raises(ValidationError) as error:
         payouts.build_weekly_payout(farmer, WEEK_1_START)
@@ -157,9 +155,7 @@ def test_finalisation_rejects_overflowing_member_sum_without_changes(farmer, gra
     first = _model_delivery(
         farmer, grade, WEEK_1_START, amount=Decimal("999999999999.99")
     )
-    second = _model_delivery(
-        farmer, grade, WEEK_1_START, amount=Decimal("0.01")
-    )
+    second = _model_delivery(farmer, grade, WEEK_1_START, amount=Decimal("0.01"))
     Delivery.objects.filter(pk__in=[first.pk, second.pk]).update(payout=draft)
 
     with pytest.raises(ValidationError) as error:
@@ -677,7 +673,9 @@ def test_large_advance_is_recovered_across_successive_weeks(farmer, grade):
 
 
 @pytest.mark.m2
-def test_repeated_finalisation_does_not_recover_or_touch_the_frozen_payout(farmer, grade):
+def test_repeated_finalisation_does_not_recover_or_touch_the_frozen_payout(
+    farmer, grade
+):
     from procurement.services import advances, payouts
 
     advances.post_advance(farmer, Decimal("500.00"), WEEK_1_START)
@@ -721,7 +719,9 @@ def test_concurrent_finalisation_recovers_exactly_once():
     from procurement.services import advances, payouts
 
     farmer = Farmer.objects.create(name="Asha", phone="9000000001", village="Kolar")
-    advances.post_advance(Farmer.objects.get(pk=farmer.pk), Decimal("1000.00"), WEEK_1_START)
+    advances.post_advance(
+        Farmer.objects.get(pk=farmer.pk), Decimal("1000.00"), WEEK_1_START
+    )
     crop = Crop.objects.create(
         name="Maize", moisture_threshold=Decimal("14.00"), max_moisture=Decimal("20.00")
     )
@@ -804,7 +804,9 @@ def test_finalisation_rolls_back_after_balance_save(farmer, grade, monkeypatch):
     assert draft.status == PayoutStatus.DRAFT
     assert draft.finalised_at is None
     assert (draft.gross_amount, draft.advance_deduction, draft.net_amount) == (
-        Decimal("110.05"), Decimal("0.00"), Decimal("110.05")
+        Decimal("110.05"),
+        Decimal("0.00"),
+        Decimal("110.05"),
     )
     assert farmer.outstanding_advance == Decimal("100.00")
     assert {first.payout_id, second.payout_id} == {draft.pk}

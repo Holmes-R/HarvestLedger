@@ -65,7 +65,9 @@ def test_every_seeded_ledger_reconciles(seed):
     for farmer in Farmer.objects.order_by("pk"):
         snapshot = ledger.build_farmer_ledger(farmer)
         assert snapshot.is_reconciled
-        assert snapshot.reconciliation.stored_outstanding == snapshot.outstanding_advance
+        assert (
+            snapshot.reconciliation.stored_outstanding == snapshot.outstanding_advance
+        )
         assert snapshot.total_advances == sum(a.amount for a in snapshot.advances)
 
 

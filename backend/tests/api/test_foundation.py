@@ -20,8 +20,9 @@ def test_explicit_anonymous_access_policy():
 
 
 def test_json_renderer_and_decimal_strings_configured():
-    assert "rest_framework.renderers.JSONRenderer" in (
-        settings.REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]
+    assert (
+        "rest_framework.renderers.JSONRenderer"
+        in (settings.REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"])
     )
     assert settings.REST_FRAMEWORK["COERCE_DECIMAL_TO_STRING"] is True
 
@@ -37,18 +38,14 @@ def test_cors_middleware_runs_before_common_and_has_no_wildcard():
 
 @pytest.mark.django_db
 def test_allowed_origin_is_reflected(client):
-    response = client.get(
-        reverse("api:health"), HTTP_ORIGIN="http://localhost:5173"
-    )
+    response = client.get(reverse("api:health"), HTTP_ORIGIN="http://localhost:5173")
     assert response.status_code == 200
     assert response["access-control-allow-origin"] == "http://localhost:5173"
 
 
 @pytest.mark.django_db
 def test_disallowed_origin_is_not_reflected(client):
-    response = client.get(
-        reverse("api:health"), HTTP_ORIGIN="http://evil.example"
-    )
+    response = client.get(reverse("api:health"), HTTP_ORIGIN="http://evil.example")
     assert response.status_code == 200
     assert "access-control-allow-origin" not in response
 

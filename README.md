@@ -286,12 +286,20 @@ misreported as conflicts.
 generated. It is returned on every response as `X-Request-ID` and in error
 bodies, and is used in structured logs.
 
+**Browser headers.** Allowed frontend origins may send `X-Request-ID` and the
+optional `X-Test-Clock`/`X-Review-Key` headers. `X-Request-ID` is exposed to
+browser JavaScript on responses. Origins remain explicitly configured by
+`CORS_ALLOWED_ORIGINS`; CORS does not grant authentication or bypass the
+reviewer-clock feature flag and key checks.
+
 **Logging.** One structured JSON line per request
 (`procurement/api/request_log.py`) with a real UTC timestamp, level, event,
 request ID, method, safe path (never the query string), status, duration and the
 non-sensitive numeric record IDs from the URL. Domain rejections log at
 `WARNING` (`request.rejected`); unexpected faults log at `ERROR`
-(`request.failed`) with server-side exception type, message and traceback.
+(`request.failed`) with the exception class and stack-frame module, function and
+line locations. Exception messages, arguments, chained messages, source excerpts
+and local variables are excluded because they may contain sensitive values.
 Request/response bodies, credentials, banking references and review keys are
 never logged.
 
@@ -510,17 +518,12 @@ inclusive, with `Payout.week_start` the Monday and `week_end` the Sunday.
 
 ## 9. Error handling and logging
 
-Explain:
-- Validation errors.
-- Business-rule violations.
-- State conflicts.
-- Expected database conflicts.
-- Unexpected failures and transaction rollback.
-
-Show the actual error-response shape.
-
-Document logging fields, levels, request IDs,
-sensitive-data exclusions and hosted log access.
+The API status map and response envelope are documented in §7 above. Every
+unmatched `/api/v1/` route returns a JSON `404 not_found` envelope with a
+matching `X-Request-ID`. Unexpected faults return a generic public `500`; the
+structured server log retains the request ID, exception class and safe frame
+locations without exception text. Financial writes remain transactionally
+rolled back when a service raises.
 
 ## 10. Reviewer aids
 

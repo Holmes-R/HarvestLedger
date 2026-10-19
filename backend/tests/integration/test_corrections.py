@@ -134,7 +134,9 @@ def test_correction_uses_persisted_original_farmer_and_snapshot(farmer, grade):
     assert stored_note.original_delivery_id == stored_original.pk
     assert stored_note.farmer_id == stored_original.farmer_id
     assert stored_note.amount == Decimal("10.00")
-    assert not Delivery.objects.filter(original_delivery=stored_original, farmer=other).exists()
+    assert not Delivery.objects.filter(
+        original_delivery=stored_original, farmer=other
+    ).exists()
 
 
 @pytest.mark.m2
@@ -499,9 +501,7 @@ def test_correction_inherits_the_originals_farmer(farmer, grade):
 
 
 @pytest.mark.m2
-@pytest.mark.parametrize(
-    "kind", [DeliveryKind.PROCUREMENT, "SOMETHING_ELSE", None, ""]
-)
+@pytest.mark.parametrize("kind", [DeliveryKind.PROCUREMENT, "SOMETHING_ELSE", None, ""])
 def test_invalid_correction_kind_is_rejected(farmer, grade, kind):
     from procurement.services import corrections
 
@@ -779,8 +779,6 @@ def test_concurrent_correction_inclusion_assigns_the_note_once():
     with ThreadPoolExecutor(max_workers=6) as pool:
         list(pool.map(build, range(6)))
 
-    assert (
-        Payout.objects.filter(farmer=farmer, week_start=NEXT_WEEK_START).count() == 1
-    )
+    assert Payout.objects.filter(farmer=farmer, week_start=NEXT_WEEK_START).count() == 1
     draft = Payout.objects.get(farmer=farmer, week_start=NEXT_WEEK_START)
     assert set(draft.deliveries.values_list("pk", flat=True)) == {note.pk}

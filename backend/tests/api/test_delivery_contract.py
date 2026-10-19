@@ -41,10 +41,17 @@ def _settled(api_client, farmer, grade):
 
 
 @pytest.mark.django_db
-def test_preview_returns_full_breakdown_and_writes_nothing(api_client, farmer, grade, price):
+def test_preview_returns_full_breakdown_and_writes_nothing(
+    api_client, farmer, grade, price
+):
     response = api_client.post(
         reverse("api:delivery-preview"),
-        {**BASE, "farmer": farmer.id, "crop_grade": grade.id, "moisture_percent": "18.00"},
+        {
+            **BASE,
+            "farmer": farmer.id,
+            "crop_grade": grade.id,
+            "moisture_percent": "18.00",
+        },
         format="json",
     )
     assert response.status_code == 200
@@ -117,8 +124,12 @@ def test_preview_moisture_boundaries(api_client, farmer, grade, price):
     def preview(moisture):
         return api_client.post(
             reverse("api:delivery-preview"),
-            {**BASE, "farmer": farmer.id, "crop_grade": grade.id,
-             "moisture_percent": moisture},
+            {
+                **BASE,
+                "farmer": farmer.id,
+                "crop_grade": grade.id,
+                "moisture_percent": moisture,
+            },
             format="json",
         )
 
@@ -219,7 +230,9 @@ def test_edit_refreshes_draft_totals(api_client, farmer, grade, price):
 
 
 @pytest.mark.django_db
-def test_edit_finalised_and_paid_deliveries_are_rejected(api_client, farmer, grade, price):
+def test_edit_finalised_and_paid_deliveries_are_rejected(
+    api_client, farmer, grade, price
+):
     created = _record(api_client, farmer, grade).json()
     payout = payouts.build_weekly_payout(farmer, date(2026, 1, 5))
     payouts.finalise_payout(payout)
@@ -294,7 +307,9 @@ def test_nested_correction_unknown_original(api_client, farmer, grade, price):
 
 
 @pytest.mark.django_db
-def test_nested_correction_against_unsettled_is_conflict(api_client, farmer, grade, price):
+def test_nested_correction_against_unsettled_is_conflict(
+    api_client, farmer, grade, price
+):
     created = _record(api_client, farmer, grade).json()
     response = api_client.post(
         reverse("api:delivery-corrections", args=[created["id"]]),

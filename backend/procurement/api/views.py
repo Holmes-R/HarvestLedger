@@ -208,9 +208,7 @@ class FarmerDetailView(GenericAPIView):
     serializer_class = FarmerSerializer
 
     def get_object(self):
-        return _get_or_not_found(
-            Farmer, self.kwargs["pk"], FarmerNotFound, "Farmer"
-        )
+        return _get_or_not_found(Farmer, self.kwargs["pk"], FarmerNotFound, "Farmer")
 
     @extend_schema(
         tags=["Reference data"],
@@ -315,9 +313,7 @@ class FarmerLedgerView(GenericAPIView):
             FROM_PARAM,
             TO_PARAM,
             EVENT_TYPE_PARAM,
-            ordering_parameter(
-                ("date", "amount", "id", "event_type"), "'-date'"
-            ),
+            ordering_parameter(("date", "amount", "id", "event_type"), "'-date'"),
         ],
         responses=documented({200: LedgerPageSerializer}),
         examples=[LEDGER_PAGE_EXAMPLE, ERROR_EXAMPLE],
@@ -370,9 +366,7 @@ class FarmerLedgerView(GenericAPIView):
             "Lists crops with their allowed grade codes. Ordering is restricted "
             "to the whitelisted keys and ends with an ``id`` tie-breaker."
         ),
-        parameters=[
-            ordering_parameter(("id", "name", "created_at"), "'name', 'id'")
-        ],
+        parameters=[ordering_parameter(("id", "name", "created_at"), "'name', 'id'")],
         responses=documented({200: CropSerializer(many=True)}),
     ),
     post=extend_schema(
@@ -596,9 +590,7 @@ class DeliveryListCreate(OrderingMixin, ListCreateAPIView):
     default_ordering = ("-accounting_date", "-id")
 
     def get_queryset(self):
-        queryset = Delivery.objects.select_related(
-            "farmer", "crop_grade", "payout"
-        )
+        queryset = Delivery.objects.select_related("farmer", "crop_grade", "payout")
         params = self.request.query_params
         farmer = params.get("farmer")
         kind = params.get("kind")
@@ -757,9 +749,7 @@ class AdvanceListCreate(OrderingMixin, ListCreateAPIView):
         serializer = AdvanceCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         advance = serializer.save()
-        return Response(
-            AdvanceSerializer(advance).data, status=status.HTTP_201_CREATED
-        )
+        return Response(AdvanceSerializer(advance).data, status=status.HTTP_201_CREATED)
 
 
 @extend_schema_view(
@@ -792,9 +782,7 @@ class AdvanceReconciliationView(RetrieveAPIView):
     serializer_class = AdvanceReconciliationSerializer
 
     def get_object(self):
-        farmer = _get_or_not_found(
-            Farmer, self.kwargs["pk"], FarmerNotFound, "Farmer"
-        )
+        farmer = _get_or_not_found(Farmer, self.kwargs["pk"], FarmerNotFound, "Farmer")
         return reconcile_outstanding(farmer)
 
 
@@ -893,9 +881,7 @@ class CorrectionDetail(RetrieveAPIView):
 
     def get_object(self):
         try:
-            return Delivery.objects.get(
-                pk=self.kwargs["pk"], kind__in=GRADE_NOTE_KINDS
-            )
+            return Delivery.objects.get(pk=self.kwargs["pk"], kind__in=GRADE_NOTE_KINDS)
         except (Delivery.DoesNotExist, ValueError, TypeError) as exc:
             raise NotFound(f"Correction {self.kwargs['pk']} was not found.") from exc
 
@@ -923,8 +909,8 @@ class PayoutGenerateView(GenericAPIView):
         description=(
             "Builds or extends the DRAFT payout for the Monday-based week "
             "containing ``week_start``. Returns ``201`` with the statement, or "
-            "``200`` with ``{\"payout\": null, \"reason\": "
-            "\"NO_ELIGIBLE_DELIVERIES\"}`` when the week has no eligible "
+            '``200`` with ``{"payout": null, "reason": '
+            '"NO_ELIGIBLE_DELIVERIES"}`` when the week has no eligible '
             "deliveries -- a successful no-op, no payout is invented. "
             "Re-generating an existing draft is idempotent; a finalised/paid "
             "week returns ``409 payout_state_error``."

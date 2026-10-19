@@ -92,9 +92,7 @@ def test_advance_that_would_overflow_outstanding_balance_is_atomic(farmer):
     assert error.value.code == "max_whole_digits"
     farmer.refresh_from_db()
     assert farmer.outstanding_advance == maximum
-    assert list(Advance.objects.values_list("pk", "amount")) == [
-        (first.pk, maximum)
-    ]
+    assert list(Advance.objects.values_list("pk", "amount")) == [(first.pk, maximum)]
 
 
 def test_posting_requires_a_saved_farmer():
@@ -178,9 +176,7 @@ def test_concurrent_advances_do_not_lose_balance_updates():
 
     def post(_index):
         try:
-            advances.post_advance(
-                Farmer.objects.get(pk=farmer.pk), amount, WEEK_START
-            )
+            advances.post_advance(Farmer.objects.get(pk=farmer.pk), amount, WEEK_START)
         finally:
             connections.close_all()
 

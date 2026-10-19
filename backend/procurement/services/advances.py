@@ -107,9 +107,9 @@ def reconcile_outstanding(farmer: Farmer) -> AdvanceReconciliation:
         or ZERO
     )
     total_recovered = quantize_money(
-        Payout.objects.filter(
-            farmer=farmer, status__in=_RECOVERED_STATUSES
-        ).aggregate(total=Sum("advance_deduction"))["total"]
+        Payout.objects.filter(farmer=farmer, status__in=_RECOVERED_STATUSES).aggregate(
+            total=Sum("advance_deduction")
+        )["total"]
         or ZERO
     )
     expected = quantize_money(total_advances - total_recovered)

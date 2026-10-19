@@ -341,7 +341,9 @@ DEMO_CORRECTIONS: tuple[CorrectionSpec, ...] = (
 # Payout actions, in execution order. The correction-anchored supplementary is
 # listed after the WEEK 1 payouts so the original is already finalised/paid.
 DEMO_PAYOUTS: tuple[PayoutSpec, ...] = (
-    PayoutSpec("P-BACKDATED", "FARMER-1", date(2025, 12, 15), "D-BACKDATED", True, False),
+    PayoutSpec(
+        "P-BACKDATED", "FARMER-1", date(2025, 12, 15), "D-BACKDATED", True, False
+    ),
     PayoutSpec("P-W1-F1", "FARMER-1", date(2026, 1, 5), "D-W1-AT", True, True),
     PayoutSpec("P-W1-F2", "FARMER-2", date(2026, 1, 5), "D-F2-W1", True, True),
     PayoutSpec("P-W2-F1", "FARMER-1", date(2026, 1, 12), "D-W2", True, False),
@@ -581,6 +583,4 @@ class Command(BaseCommand):
             )
         except pricing.PriceNotFound:
             return
-        raise AssertionError(
-            "demo missing-rate delivery unexpectedly resolved a price"
-        )
+        raise AssertionError("demo missing-rate delivery unexpectedly resolved a price")

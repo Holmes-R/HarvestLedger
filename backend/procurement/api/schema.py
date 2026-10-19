@@ -73,8 +73,7 @@ ERROR_RESPONSES = {
     ),
     403: _error(
         403,
-        "Reviewer clock aid disabled or unauthorised (only when X-Test-Clock is "
-        "sent).",
+        "Reviewer clock aid disabled or unauthorised (only when X-Test-Clock is sent).",
     ),
     404: _error(
         404,
@@ -126,9 +125,7 @@ def ordering_parameter(fields, default):
 FARMER_PARAM = OpenApiParameter(
     name="farmer", type=int, description="Filter by farmer id."
 )
-CROP_PARAM = OpenApiParameter(
-    name="crop", type=int, description="Filter by crop id."
-)
+CROP_PARAM = OpenApiParameter(name="crop", type=int, description="Filter by crop id.")
 CROP_GRADE_PARAM = OpenApiParameter(
     name="crop_grade", type=int, description="Filter by crop-grade id."
 )
@@ -203,9 +200,7 @@ REVIEW_CLOCK_HEADERS = [
         name=REVIEW_KEY_HEADER,
         type=str,
         location=OpenApiParameter.HEADER,
-        description=(
-            "Shared secret authorising X-Test-Clock. Never logged or echoed."
-        ),
+        description=("Shared secret authorising X-Test-Clock. Never logged or echoed."),
     ),
 ]
 
@@ -217,9 +212,7 @@ ERROR_EXAMPLE = OpenApiExample(
     value={
         "error": {
             "code": "price_not_found",
-            "message": (
-                "No effective price for crop grade A on or before 2026-01-05."
-            ),
+            "message": ("No effective price for crop grade A on or before 2026-01-05."),
             "details": {},
             "request_id": "3f2c1b0a9d8e7f60",
         }

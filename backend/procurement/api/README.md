@@ -17,6 +17,11 @@ assignment specifies no identity or access control, so write safety comes from
 the strict write contract (`ProtectedFieldMixin` refuses server-computed fields)
 rather than from a caller identity. The only keyed surface is the demo-only
 reviewer-clock aid (`ALLOW_REVIEW_CLOCK` / `REVIEW_CLOCK_KEY`, off by default).
+Configured frontend origins may send `X-Request-ID`, `X-Test-Clock`, and
+`X-Review-Key` through CORS; this does not weaken the clock's flag/key gate.
+Unknown `/api/v1/` routes return the same JSON `404 not_found` envelope as
+other API errors. Unexpected-error logs retain exception class and safe stack
+locations, not exception text or chained messages.
 
 See the root [`README.md`](../../../README.md) §7 for pagination, ordering,
 filters, the error envelope and the status map.
@@ -60,6 +65,8 @@ Cross-cutting pieces are pinned by their own suites:
 | Request id + reviewer-clock middleware | `api/middleware.py` | `test_review_clock.py` |
 | OpenAPI schema / Swagger UI | `api/schema.py`, `config/settings.py` | `test_schema.py` |
 | Versioning, anonymous policy, CORS, renderers | `config/settings.py`, `config/urls.py` | `test_foundation.py` |
+| Safe error logs, CORS preflight, unmatched API routes | `api/errors.py`, `config/settings.py`, `config/urls.py` | `test_m3_security_regressions.py` |
+| Barrier-coordinated HTTP financial/clock races | M2 services through API views | `test_http_concurrency_regressions.py` |
 | Strict write contract (protected/unsupported fields) | `api/serializers.py` | `test_serializer_conventions.py`, `test_delivery_contract.py` |
 
 ## API01-API12 acceptance matrix

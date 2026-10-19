@@ -379,9 +379,7 @@ def test_price_list_is_append_only(api_client, price):
     assert update.status_code == 405
     delete = api_client.delete(reverse("api:price-list"))
     assert delete.status_code == 405
-    detail = api_client.get(
-        f"{reverse('api:price-list')}{price.id}/"
-    )
+    detail = api_client.get(f"{reverse('api:price-list')}{price.id}/")
     assert detail.status_code == 404
     price.refresh_from_db()
     assert price.price_per_kg == Decimal("24.50")

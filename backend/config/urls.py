@@ -14,17 +14,21 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from procurement.api.errors import api_route_not_found
+
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('api/v1/', include('procurement.api.urls')),
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path("admin/", admin.site.urls),
+    path("api/v1/", include("procurement.api.urls")),
+    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
-        'api/docs/',
-        SpectacularSwaggerView.as_view(url_name='schema'),
-        name='docs',
+        "api/docs/",
+        SpectacularSwaggerView.as_view(url_name="schema"),
+        name="docs",
     ),
+    re_path(r"^api/v1/.*$", api_route_not_found, name="api-route-not-found"),
 ]

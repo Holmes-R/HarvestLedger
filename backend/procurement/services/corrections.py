@@ -86,7 +86,9 @@ def record_correction(
         # reference between this initial lookup and the locks.
         reference = Delivery.objects.filter(pk=original_pk).values("farmer_id").first()
         if reference is None:
-            raise OriginalDeliveryNotFound(f"Original delivery {original_pk} was not found.")
+            raise OriginalDeliveryNotFound(
+                f"Original delivery {original_pk} was not found."
+            )
         farmer = lock_farmer(reference["farmer_id"])
         current = (
             Delivery.objects.filter(pk=original_pk)
@@ -94,7 +96,9 @@ def record_correction(
             .first()
         )
         if current is None:
-            raise OriginalDeliveryNotFound(f"Original delivery {original_pk} was not found.")
+            raise OriginalDeliveryNotFound(
+                f"Original delivery {original_pk} was not found."
+            )
         if current["farmer_id"] != farmer.pk:
             raise ValidationError(
                 "The original delivery changed while being checked.",

@@ -142,9 +142,7 @@ def test_reversed_date_ranges_are_rejected(api_client, farmer, grade, price):
 
 @pytest.mark.django_db
 def test_unknown_ordering_field_is_rejected(api_client, farmer):
-    response = api_client.get(
-        reverse("api:farmer-list"), {"ordering": "password"}
-    )
+    response = api_client.get(reverse("api:farmer-list"), {"ordering": "password"})
     assert response.status_code == 400
     assert _error(response)["code"] == "invalid"
     assert "ordering" in _error(response)["details"]
@@ -176,9 +174,7 @@ def test_ordering_can_be_reversed(api_client, db):
         Farmer(name=name, phone=phone, village="Kolar")
         for name, phone in [("Zara", "9000000001"), ("Asha", "9000000002")]
     )
-    body = api_client.get(
-        reverse("api:farmer-list"), {"ordering": "-name"}
-    ).json()
+    body = api_client.get(reverse("api:farmer-list"), {"ordering": "-name"}).json()
     assert [row["name"] for row in body["results"]] == ["Zara", "Asha"]
 
 
@@ -258,7 +254,9 @@ def test_payout_week_and_status_filters(api_client, farmer):
 @pytest.mark.django_db
 def test_price_filters_by_crop_and_grade(api_client, crop, grade, price):
     other = Crop.objects.create(
-        name="Groundnut", moisture_threshold=Decimal("12.00"), max_moisture=Decimal("18.00")
+        name="Groundnut",
+        moisture_threshold=Decimal("12.00"),
+        max_moisture=Decimal("18.00"),
     )
     other_grade = CropGrade.objects.create(crop=other, code="A")
     url = reverse("api:price-list")

@@ -123,9 +123,7 @@ def test_malformed_timestamp_is_rejected(api_client, farmer, grade, price):
 @pytest.mark.django_db
 @override_settings(ALLOW_REVIEW_CLOCK=True, REVIEW_CLOCK_KEY=KEY)
 def test_timezone_naive_timestamp_is_rejected(api_client, farmer, grade, price):
-    response = _preview(
-        api_client, farmer, grade, clock="2026-03-16T00:30:00", key=KEY
-    )
+    response = _preview(api_client, farmer, grade, clock="2026-03-16T00:30:00", key=KEY)
     assert response.status_code == 400
     assert _error(response)["code"] == "review_clock_invalid"
 
