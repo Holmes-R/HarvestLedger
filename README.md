@@ -177,7 +177,7 @@ strings** (never JSON floats) at the model field's scale —
 | POST | /api/v1/farmers/ | Create a farmer |
 | GET | /api/v1/farmers/{id}/ | Farmer detail |
 | PATCH | /api/v1/farmers/{id}/ | Update a farmer (`name`, `phone`, `village`, `bank_reference`) |
-| GET | /api/v1/farmers/{id}/ledger/ | Full reconciled ledger (`from`/`to` bound history) |
+| GET | /api/v1/farmers/{id}/ledger/ | Bounded ledger page: typed event timeline + full-history summary (`from`/`to`/`event_type`) |
 | GET | /api/v1/farmers/{id}/advance-reconciliation/ | Advance/recovery reconciliation |
 | GET | /api/v1/crops/ | List crops (with `allowed_grades`) |
 | POST | /api/v1/crops/ | Create a crop and its allowed grades |
@@ -361,6 +361,25 @@ accepted generate fields (a forged `deliveries`/`status`/total is `400
 protected_field`), there is no generic mutation route (list has no `POST`, the
 statement has no `PATCH`/`DELETE`), and the finalised financial values are
 frozen.
+
+**OpenAPI schema.** The generated schema (`/api/schema/`, browsable at
+`/api/docs/`) is the machine-readable contract and is kept in step with the
+responses above. Every operation is tagged and summarised, request/response
+bodies reference named components, and money/weight/percentage fields are
+documented as decimal **strings** at their column scale (never JSON floats). It
+describes the shared error envelope and its status families, the
+pagination/ordering/filter parameters of every list (including that an unknown
+ordering key is `400`), the empty-week payout success (`200`,
+`reason: NO_ELIGIBLE_DELIVERIES`) alongside the `201` created statement, the
+one-way `finalise`/`mark-paid` transitions (documented with no request body), and
+the optional, demo-only reviewer-clock headers (`X-Test-Clock`/`X-Review-Key`,
+§10.1) with their `403`/`400` rejection codes. Enums are shared named
+components, so `kind` and `status` reuse a single component each instead of
+diverging per endpoint. Regenerate and validate from `backend/`:
+
+```bash
+venv/Scripts/python.exe manage.py spectacular --validate --file schema.yaml
+```
 
 ## 8. Business rules and assumptions
 

@@ -401,3 +401,54 @@ Produced:
   never logged.
 - `.env.example` + README §10.1 — placeholders and demo-only rationale. `COVERAGE.md`
   refreshed.
+
+## Entry 12 — Complete OpenAPI documentation
+
+> Complete the OpenAPI documentation for every implemented endpoint. Expose the
+> schema and interactive docs; describe input/output serializers and required
+> fields; document decimal-string precision, date/week interpretation,
+> pagination, filtering, ordering, permission and authentication policy, the error
+> envelope and its status codes, the empty-week response and finalisation/retry
+> behaviour, and the optional reviewer-clock headers. Include realistic fictional
+> examples that contain no credentials. Generate and validate the schema with the
+> configured tooling and resolve actionable warnings. Verify that the delivery
+> preview, correction, ledger and payout action responses are documented
+> accurately, and do not invent fields or examples that are inconsistent with the
+> actual responses.
+
+Produced:
+
+- `procurement/api/schema.py` (new) — the shared OpenAPI building blocks: the
+  error-envelope serializers (`ErrorDetail`/`ErrorBody`/`ErrorEnvelope`), the
+  `HealthSerializer`, `ERROR_RESPONSES` (400/403/404/409/422/500) and the
+  `documented()`/`ordering_parameter()` helpers, the reusable query-parameter
+  objects, the optional reviewer-clock header objects, and realistic fictional
+  examples (error, delivery preview, correction note, ledger page, draft/empty/
+  finalised payout) that mirror the exact response fields.
+- `config/settings.py` — enriched `SPECTACULAR_SETTINGS`: a description covering
+  the anonymous access policy, decimal-string scales, IST dates and Mon–Sun weeks,
+  pagination/ordering/filtering, the error envelope and status families, the
+  empty-week payout success and one-way finalisation, and the demo-only reviewer
+  clock; four named enum components via `ENUM_NAME_OVERRIDES`; endpoint tags.
+- `procurement/api/views.py` — annotated every operation with
+  `extend_schema`/`extend_schema_view` (tags, summary, description, request,
+  merged success + error responses, parameters and examples). Converted the plain
+  `health` function to a DRF `@api_view` so it appears in the schema; documented
+  both `201`/`200` generate outcomes; documented `finalise`/`mark-paid` with no
+  request body; removed the ineffective `@extend_schema` decorators that had been
+  placed on overridden `create` methods (drf-spectacular reads the HTTP handler),
+  and supplied explicit descriptions so the `OrderingMixin` docstring no longer
+  leaks into list operations. Also fixed the previously missing request bodies on
+  `POST /deliveries/`, `/corrections/` and `/price-lists/`.
+- `procurement/api/serializers.py` — annotated `GradeOrCodeField` with
+  `extend_schema_field` (a grade id or code) so the price-entry request body
+  resolves instead of degrading to `string`.
+- `tests/api/test_schema.py` (extended from 2 to 15 tests) — validates the schema
+  against the OpenAPI 3.0 spec, asserts every documented path/method, that
+  operations are grouped and labelled, that internal docstrings never leak, the
+  named enum components, the error envelope, and the contracts for the delivery
+  write, preview `business_date`, reviewer-clock headers, payout generation's two
+  outcomes, body-less payout transitions, the ledger page and list ordering.
+- README §7 — added the **OpenAPI schema** subsection and corrected the ledger
+  endpoint description. `COVERAGE.md` refreshed (514 passed).
+

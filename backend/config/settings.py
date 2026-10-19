@@ -196,14 +196,101 @@ LOGGING = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "HarvestLedger API",
     "DESCRIPTION": (
-        "Produce procurement and payout API. Records deliveries, applies "
-        "effective-dated prices and moisture deductions, posts advances, and "
-        "generates weekly payouts with advance recovery. Money is returned as "
-        "decimal strings."
+        "Produce procurement and payout API for HarvestLedger (KJBN Labs "
+        "problem 4). The API is a thin HTTP adapter over "
+        "``procurement.services``: every business rule (price resolution, "
+        "moisture deduction, advance recovery, weekly payout grouping, locking) "
+        "lives in that layer.\n\n"
+        "### Authentication and permissions\n"
+        "There is **no API authentication**: every endpoint is ``AllowAny`` "
+        "(fictional-demo policy; see README section 9). No key, token or "
+        "credentials are required or accepted. The optional reviewer-clock "
+        "headers are a demo aid, not authentication.\n\n"
+        "### Money and decimal strings\n"
+        "Every decimal is rendered as a **string** (never a JSON number) at the "
+        "scale of its stored column, so precision is never lost in transit: "
+        "money 2 dp, gross/net weights 3 dp and 5 dp, percentages 2 dp. Requests "
+        "are validated at the same scale -- excess decimal places or digits "
+        "return ``400``.\n\n"
+        "### Dates, weeks and the business clock\n"
+        "``delivered_on``, ``accounting_date``, ``week_start`` and ``week_end`` "
+        "are plain IST (``Asia/Kolkata``) business dates (``YYYY-MM-DD``). "
+        "``created_at``, ``recorded_at``, ``finalised_at`` and ``paid_at`` are "
+        "UTC instants (``...Z``). A **week is Monday..Sunday**: ``week_start`` "
+        "is that Monday and ``week_end`` the following Sunday; payout generation "
+        "targets the Monday-based week containing the requested date.\n\n"
+        "### Pagination, ordering and filtering\n"
+        "List responses are paginated: **20 per page by default, up to 100** "
+        "with ``?page_size=`` (larger values are clamped; an out-of-range page "
+        "returns ``404``). Each collection has a default ordering that always "
+        "ends with an id tie-breaker; ``?ordering=<field>`` (prefix ``-`` to "
+        "reverse) accepts only the whitelisted keys documented per endpoint and "
+        "rejects others with ``400``. Filters are documented per endpoint; date "
+        "filters are **inclusive** at both ends and a reversed range returns "
+        "``400``.\n\n"
+        "### Error envelope and status codes\n"
+        "Every error uses one envelope: "
+        "``{\"error\": {\"code\", \"message\", \"details\", \"request_id\"}}``. "
+        "A request id (client-supplied when it matches "
+        "``^[A-Za-z0-9._:-]{8,128}$``, otherwise generated) is echoed in the "
+        "body and the ``X-Request-ID`` header and used in structured logs. "
+        "Status families: ``400`` malformed, ``403`` reviewer clock "
+        "disabled/unauthorised, ``404`` unknown resource, ``409`` duplicate or "
+        "forbidden state transition, ``422`` domain rejection, ``500`` "
+        "unexpected fault (generic message). Bodies, credentials, banking "
+        "references, review keys and query strings are never logged.\n\n"
+        "### Weekly payouts\n"
+        "``POST /payouts/generate/`` returns ``201`` with the created or "
+        "extended **DRAFT** statement, or ``200`` with "
+        "``{\"payout\": null, \"reason\": \"NO_ELIGIBLE_DELIVERIES\"}`` when the "
+        "week has no eligible deliveries -- a successful no-op, no payout is "
+        "invented. Finalisation (``/finalise/``) freezes the statement and "
+        "applies advance recovery; ``/mark-paid/`` records payment. Both are "
+        "one-way transitions: repeating one, or acting out of order, returns "
+        "``409 payout_state_error``, and a finalised statement cannot be "
+        "regenerated or edited.\n\n"
+        "### Reviewer clock (demo-only)\n"
+        "When enabled server-side, an authorised request may pin the business "
+        "clock with ``X-Test-Clock`` (timezone-aware ISO-8601) plus "
+        "``X-Review-Key``. It affects business-date decisions for that request "
+        "only; audit timestamps and request logs stay on real time. Off by "
+        "default, with no production bypass. See README section 10.1.\n"
     ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
+    "TAGS": [
+        {
+            "name": "System",
+            "description": "Liveness and API documentation.",
+        },
+        {
+            "name": "Reference data",
+            "description": (
+                "Farmers, crops, grades and append-only, effective-dated prices."
+            ),
+        },
+        {
+            "name": "Operations",
+            "description": (
+                "Deliveries, their corrections, advances and the farmer ledger."
+            ),
+        },
+        {
+            "name": "Payouts",
+            "description": (
+                "Weekly payout generation, finalisation and payment."
+            ),
+        },
+    ],
+    # Give the shared choice sets stable, descriptive component names and
+    # resolve the ``kind`` collision between deliveries and correction notes.
+    "ENUM_NAME_OVERRIDES": {
+        "DeliveryKindEnum": "procurement.models.DeliveryKind.choices",
+        "GradeNoteKindEnum": "procurement.models.GRADE_NOTE_KINDS",
+        "PayoutStatusEnum": "procurement.models.PayoutStatus.choices",
+        "LedgerEventTypeEnum": "procurement.api.serializers.LEDGER_EVENT_TYPES",
+    },
 }
 
 # CORS: allow the local Vite dev origin only by default; override with the

@@ -396,6 +396,12 @@ class PriceListEntrySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+@extend_schema_field(
+    {
+        "oneOf": [{"type": "integer"}, {"type": "string", "maxLength": 2}],
+        "description": "A crop-grade id (integer) or a grade code (string).",
+    }
+)
 class GradeOrCodeField(serializers.Field):
     """Accept a crop-grade primary key or a grade code.
 
