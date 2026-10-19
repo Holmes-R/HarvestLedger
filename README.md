@@ -13,10 +13,11 @@ farmer payouts with advance recovery.
   effective-dated prices and moisture deductions, and generates weekly farmer
   payouts with advance recovery.
 
-**Current milestone: M2 service layer.** M1 schema and M2 services are present.
-The Part 1 validation and Part 2 correction, recovery and payout policies have
-regression coverage. HTTP endpoints (M3) and the procurement UI (M4) are
-pending; see [section 11](#11-known-limitations).
+**Current milestone: M4 procurement UI.** M1 schema, M2 services and the M3
+HTTP API are complete (527 passing tests). The React/TypeScript frontend is now a
+working UI over the real API: delivery entry with a live preview, price history,
+weekly payouts and the farmer ledger, plus farmer/crop/advance/correction forms.
+See [section 7a](#7a-frontend-m4-ui).
 
 ## 2. Live links
 
@@ -34,7 +35,7 @@ pending; see [section 11](#11-known-limitations).
 | Backend | Django and Django REST Framework |
 | Frontend | React, TypeScript and Vite |
 | Database | PostgreSQL for development and tests |
-| Tests | pytest, pytest-django and pytest-cov |
+| Tests | pytest, pytest-django and pytest-cov (backend); Vitest (frontend API client) |
 | Local environment | PostgreSQL service; Docker Compose is not configured |
 | CI | GitHub Actions |
 | Hosting | <actual providers> |
@@ -102,6 +103,31 @@ The `TEST.NAME` setting reads `PGTESTDATABASE` (or defaults to
 first creation. The local role needs `CREATEDB` for a fresh pytest database.
 `SECRET_KEY` is still a development key and must move to a secret store before
 deployment.
+
+### 5.1 Frontend
+
+The UI is a React + TypeScript + Vite single-page app in `frontend/`. It talks to
+the API directly (no API proxy) and adds no runtime dependencies beyond `react`
+and `react-dom`. Point it at the backend with a git-ignored `frontend/.env`
+(copy `frontend/.env.example`):
+
+```
+VITE_API_BASE_URL=http://localhost:8000/api/v1
+```
+
+Only the public API base URL belongs in `VITE_*`; database credentials and the
+review key must never be exposed to the build. From `frontend/`:
+
+```bash
+npm install
+npm run dev      # Vite dev server (default http://localhost:5173)
+npm run lint     # ESLint (flat config, typescript-eslint)
+npm run test     # Vitest unit tests for the API client and date helpers
+npm run build    # tsc -b && vite build
+```
+
+`CORS_ALLOWED_ORIGINS` in `backend/.env` must include the dev-server origin (for
+example `http://localhost:5173`) for browser calls to succeed.
 
 ## 5a. Deployment
 
@@ -413,6 +439,95 @@ to, and the tests that pin it are listed in
 [`backend/procurement/api/README.md`](backend/procurement/api/README.md), which
 also carries the API01–API12 acceptance matrix.
 
+## 7a. Frontend (M4 UI)
+
+A dependency-light client over the M3 API. It renders **decimal strings verbatim**
+(never parses money/weight/percent into `number`), keeps the backend authoritative
+for every computation, and reproduces the API's error envelope rather than hiding
+it.
+
+**Navigation.** A tiny hash router (`src/hooks/useHashRoute.ts`) — no routing
+dependency — with four sections and deep links:
+
+| Route | Screen |
+|---|---|
+| `#/deliveries` | Delivery entry: capture form, live `POST /deliveries/preview/` breakdown, recent-deliveries list |
+| `#/deliveries/{id}` | Reusable delivery detail (frozen breakdown, payout link, "Add correction") |
+| `#/prices` | Price history: effective-dated entries with crop/grade filters |
+| `#/payouts` | Weekly payouts: generate a draft + statement list |
+| `#/payouts/{id}` | Payout statement: member deliveries, `Finalise` / `Mark paid` |
+| `#/ledger` | Farmer ledger: account summary + typed event timeline with `from`/`to`/`event_type` filters |
+
+**Reusable pieces.** `DeliveryDetail` is shared by the delivery list, the payout
+statement and the ledger (each row links to `#/deliveries/{id}` and, when a list
+only carries an id, the component fetches `GET /deliveries/{id}/`). Supporting
+forms are contextual modal panels — `FarmerForm`, `CropForm`, `AdvanceForm`,
+`CorrectionForm` — not separate dashboards. There is one HTTP client
+(`src/api/client.ts`) and one typed endpoint module (`src/api/endpoints.ts`).
+
+**Shared API client.** `src/api/client.ts` is the single choke point for network
+access, and `src/api/endpoints.ts` exposes one typed function per operation
+(farmers, crops/grades, prices, advances, delivery
+preview/create/retrieve/update, corrections, payout
+list/retrieve/generate/finalise/mark-paid, and the farmer ledger). It:
+
+- reads the base URL from `VITE_API_BASE_URL` (`frontend/.env`, placeholder in
+  `frontend/.env.example`) and only ever calls that base — an absolute `next`
+  URL outside it is refused (`invalid_request_url`);
+- keeps **every decimal a string** (no numeric coercion of money/weight/percent);
+- serialises dates to the API contract (`toApiDate` → `YYYY-MM-DD`, reduced to the
+  IST calendar date) and rejects input the API could never accept;
+- handles **pagination explicitly** — a typed `Page<T>` plus `api.page()` and
+  `iteratePages`/`collectPages` crawlers that follow the absolute `next` link and
+  stop at a bounded `maxPages`;
+- parses the shared **error envelope** into a typed `ApiError` (code, status,
+  `details` with per-field messages, and the request id);
+- preserves the **request id** — generated (well-formed) or supplied, sent as
+  `X-Request-ID`, and read back from the response header or error body;
+- handles **network errors, aborts and non-JSON bodies safely** (a non-JSON
+  success returns `undefined`; a non-JSON error falls back to a status-derived
+  envelope);
+- supports **cancellation** through an `AbortSignal` (`useAsync` passes one and
+  aborts in-flight loads on deps change/unmount);
+- **never retries automatically**, and refuses to send a server-computed
+  financial field (`protected_payload`) — `amount` is the advance principal on
+  `POST /advances/` but computed everywhere else, so the guard is path-aware;
+- on a network failure, abort or `5xx` for a write, reports the outcome as
+  **`unknown`** rather than assuming nothing was saved, and attaches
+  `error.reconciliation` (method, path, request id, `safeToRetry`, guidance) so
+  the UI states the write may have applied and to re-check before retrying; the
+  `ErrorBanner` surfaces that warning next to the operation.
+
+Tests (`src/api/*.test.ts`, `src/util/dates.test.ts`) stub `fetch` and pin URL
+construction, decimal preservation, date serialisation, page following, envelope
+parsing, request-id handling, cancellation, the protected-field guard, and the
+no-retry / unknown-outcome behaviour for failed writes.
+
+**Decisions and assumptions.**
+
+1. **No new dependencies.** React 19 + `react-dom` only; navigation, state and
+   formatting are hand-rolled to keep the scaffold as delivered.
+2. **Decimals stay strings.** Inputs are validated for scale (`src/util/decimal.ts`)
+   and posted as strings; the API's returned strings are displayed as-is.
+3. **Ids resolve to names client-side.** Delivery/advance/correction reads return
+   `farmer` as an id and a grade id only, so lists resolve labels from small
+   cached lookups (`src/api/lookups.ts`); payouts already embed `farmer_name`.
+4. **Correction notes are nullable.** The schema marks some `Delivery` fields
+   non-null, but they are `null` on credit/debit notes, so the detail view treats
+   them as optional and shows kind-specific fields.
+5. **Timestamps are shown as received** (ISO-8601 with a `+05:30` offset, not
+   `Z`) via `src/util/dates.ts`.
+6. **Editability is discovered from responses.** A delivery has no payout-status
+   field, so the UI does not pre-judge editability; a refused write surfaces the
+   API's `409 payout_state_error`/`not_editable`.
+7. **Demo clock is gated and opt-in.** The header control only adds
+   `X-Test-Clock`/`X-Review-Key` when a reviewer fills it in; the key lives in
+   memory/`sessionStorage` and is never compiled into the bundle (see §10.1).
+8. **Verification is lint + typecheck + build + a real-API smoke**, because the
+   scaffold ships no test runner. `npm run build` fails the build on any
+   `tsc -b` type error (`verbatimModuleSyntax`, `erasableSyntaxOnly`,
+   `noUnusedLocals`) and `npm run lint` is clean.
+
 ## 8. Business rules and assumptions
 
 Farmer phone numbers must be Indian mobile numbers: 10 ASCII digits starting
@@ -611,17 +726,21 @@ is not available.
 
 ## 11. Known limitations
 
-**M1 schema, M2 services and the M3 HTTP API are implemented and covered by
-tests** (527 passing; see [COVERAGE.md](COVERAGE.md)). The procurement workflow
-UI is not built yet.
+**M1 schema, M2 services, the M3 HTTP API and the M4 procurement UI are
+implemented** (527 backend tests passing; see [COVERAGE.md](COVERAGE.md)). The
+frontend is verified by `npm run lint` and `npm run build` plus a live-API smoke
+run; it has no automated test runner of its own.
 
 1. The **API is unauthenticated** by design (every route is `AllowAny`; no user
    model). It must be placed behind authentication/authorisation before it is
    exposed beyond a demo. The reviewer-clock aid is off by default and is the
    only keyed surface.
-2. Not implemented at this milestone: the procurement workflow UI and production
-   hosting/Docker wiring. The frontend currently has a phone-format form only,
-   with no HTTP integration against the API.
+2. Not implemented at this milestone: production hosting/Docker wiring and CI.
+   The frontend is a functional UI over the API with **focused unit tests for the
+   shared API client and date helpers** (`npm test`), but no component or
+   end-to-end browser tests, and there is no edit/delete affordance for
+   already-finalised financial records (by design — the API refuses those
+   writes).
 3. Deployment, hosting, live links and CI are not available yet and are left as
    placeholders earlier in this README.
 4. Concurrency is proven only against a single PostgreSQL instance with

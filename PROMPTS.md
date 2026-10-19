@@ -500,3 +500,144 @@ Produced:
   `makemigrations --check --dry-run` no changes; `manage.py spectacular
   --validate` exit 0 (0 warnings / 0 errors).
 
+## Entry 14 — Build the procurement UI over the real API (M4)
+
+> Inspect the existing React + TypeScript + Vite frontend and the M3 API, then
+> build the four principal screens (delivery entry, price history, weekly
+> payouts, farmer ledger) and supporting forms (farmer, crop/grade, advance,
+> correction) with a reusable delivery-detail presentation and hash navigation.
+> Reuse the existing scaffold and real API, keep financial calculations
+> backend-authoritative, preserve decimals as strings, add no unnecessary
+> dependencies and never expose DB credentials or review keys in `VITE_*`. Run
+> the lint/build baseline first (report any pre-existing failures separately),
+> then verify with lint, typecheck, build and a live-API smoke. Do not deploy,
+> commit or push automatically.
+
+Baseline (before changes): `npm run lint` exit 0 and `npm run build` exit 0
+(18 modules) — **no pre-existing failures**.
+
+Produced (all under `frontend/`; no new runtime dependencies):
+
+- Foundations — `.env.example` (`VITE_API_BASE_URL`), `src/vite-env.d.ts`,
+  `src/api/types.ts` (string-typed responses/requests + `as const` enum-like
+  unions), `src/api/client.ts` (fetch wrapper, `ApiError`, `toApiError`,
+  demo-clock headers, `X-Request-ID`), `src/api/endpoints.ts` (every operation),
+  `src/api/lookups.ts` (cached farmer/grade label maps), `src/util/decimal.ts`,
+  `src/util/dates.ts` (IST), `src/util/labels.ts`.
+- Hooks — `src/hooks/useHashRoute.ts` (dependency-free router),
+  `src/hooks/useAsync.ts`, `src/hooks/useSubmit.ts`, `src/hooks/useLookups.ts`.
+- Shared components — `AppShell` (`PageHeader`, nav), `Modal`/`Loading`/`Empty`,
+  `form.tsx` (`Field`, `TextInput`, `DecimalInput`, `Select`), `Pagination`,
+  `StatusBadge`, `ErrorBanner`, `DemoClockControl`, `DeliveryDetail`.
+- Forms — `FarmerForm`, `CropForm`, `AdvanceForm`, `CorrectionForm`.
+- Screens — `DeliveriesScreen` (entry + live `preview` + list),
+  `PricesScreen`, `PayoutsScreen` (+ `PayoutDetail`), `LedgerScreen`.
+- Shell — rewrote `src/App.tsx` (hash routes `#/deliveries[/:id]`, `#/prices`,
+  `#/payouts[/:id]`, `#/ledger`) and `src/App.css`; kept `src/index.css` and
+  `src/validation/phone.ts` (reused by `FarmerForm`). The previous phone-format
+  demo form was replaced.
+
+Decisions/assumptions:
+
+1. No new dependency: hash routing, request state and formatting are hand-rolled
+   (React 19 + `react-dom` only).
+2. Money/weight/percent stay strings end-to-end; inputs are scale-validated and
+   posted as strings, responses are displayed verbatim.
+3. Delivery/advance/correction reads expose `farmer` and grade as ids, so lists
+   resolve names/codes from cached lookups; payouts already embed `farmer_name`.
+4. `DeliveryRead` fields that are non-null in the schema are treated as nullable
+   because they are `null` on correction notes.
+5. Timestamps are shown as received (ISO-8601 `+05:30`, not `Z`).
+6. Editability is discovered from the response (a refused write surfaces `409
+   payout_state_error`/`not_editable`), since a delivery carries no payout status.
+7. The demo clock control is gated and opt-in; its key lives in
+   memory/`sessionStorage`, never in a build-time `VITE_*` value.
+
+Verification (from `frontend/`): `npm run lint` clean; `npm run build`
+(`tsc -b && vite build`) green (43 modules, ~262 kB JS / ~7.4 kB CSS). Live-API
+smoke against a local `runserver`: `GET /health/` 200, and 200s for
+`/farmers/`, `/deliveries/`, `/price-lists/`, `/payouts/`, `/grades/` and
+`/farmers/1/ledger/` with the expected decimal-string shapes. One real
+contract bug was caught and fixed by the smoke: the deliveries list was sending
+`?ordering=-recorded_at`, which is not in that endpoint's whitelist (400
+`invalid`) — it now uses the server default ordering (`-accounting_date, -id`).
+
+Contract notes recorded for reviewers: `deliveries/preview/` keys the farmer as
+`farmer_id` (unlike other resources); timestamps render with a `+05:30` offset,
+not `Z`; the OpenAPI `DeliveryRead` schema overstates non-nullability for
+correction-note fields. Documentation: README gained §5.1 (frontend setup) and
+§7a (M4 UI routes, decisions, contract notes); §11 updated for the post-M4 state.
+
+## Entry 15 — Harden the shared typed API client and add focused tests
+
+> Implement a shared typed API client in the existing frontend style: read
+> `VITE_API_BASE_URL` from environment configuration and add a placeholder to
+> `frontend/.env.example`. Provide typed operations for farmers, crops/grades,
+> price history, advances, delivery preview/create/retrieve/update, corrections,
+> payout list/retrieve/generate/finalise/mark-paid and the farmer ledger.
+> Preserve decimals as strings, serialise dates to the API contract, handle
+> pagination explicitly, parse structured validation/domain errors, preserve
+> request ids, handle network errors and non-JSON responses safely, support
+> request cancellation, and never auto-retry financial POSTs. Never send
+> frontend-computed financial fields as authoritative input. Do not assume a
+> network failure means a write did not happen — surface enough for the UI to
+> reconcile before retrying. Add focused API-client tests.
+
+Produced (`frontend/`):
+
+- `src/api/client.ts` (rewritten) — the single network choke point. Generated or
+  caller-supplied `X-Request-ID`, read back from the header/body; `ApiError` now
+  also carries `method`, `path`, `isWrite`, `outcome` (`rejected`/`unknown`),
+  `outcomeUnknown` and a `reconciliation` object (`safeToRetry` + guidance);
+  `AbortSignal` support with a distinct `request_aborted` code; safe handling of
+  network failures, non-JSON success (returns `undefined`) and non-JSON errors
+  (status-derived fallback envelope); explicit `Page<T>` / `api.page()` plus
+  `iteratePages`/`collectPages` crawlers that follow the absolute `next` URL and
+  stop at a bounded `maxPages`; `assertWritablePayload` guard rejecting
+  server-computed fields, path-aware so `amount` is still legal on `POST
+  /advances/`; no retries anywhere.
+- `src/api/endpoints.ts` (updated) — every function accepts `RequestOptions`
+  (signal/requestId/onRequestId), lists use `api.page`, and writes run date fields
+  through `toApiDate`.
+- `src/util/dates.ts` (extended) — `isApiDate`, `toApiDate` (IST calendar date),
+  `isApiTimestamp`.
+- `src/hooks/useAsync.ts` — loader now receives an `AbortSignal`; aborted requests
+  are ignored and in-flight loads are cancelled on deps change/unmount. Updated
+  the screens, `useLookups` and `DeliveryDetail` to pass the signal, and
+  `lookups.ts` to forward it.
+- `src/components/ErrorBanner.tsx` / `DemoClockControl.tsx` — surface the
+  unknown-write warning and validate the clock timestamp with `isApiTimestamp`.
+- `package.json` / `vitest.config.ts` — added **Vitest** (devDependency) and
+  `npm test` / `npm run test:watch`; the suite runs in a Node environment with a
+  stubbed `fetch`.
+- Tests — `src/api/client.test.ts`, `src/api/endpoints.test.ts`,
+  `src/util/dates.test.ts` (**33 tests**): URL/query building, decimal strings,
+  ISO→IST date serialisation, envelope/field-detail parsing, request-id
+  precedence, pagination (single page, following `next`, `maxPages` bound),
+  request cancellation (in-flight abort), the protected-field guard (incl. the
+  `amount`/advances exception), and the no-retry / unknown-outcome behaviour for
+  network, abort and `5xx` writes.
+
+Decisions/assumptions:
+
+1. A dropped request, an abort, or a `5xx` can follow a committed write, so those
+   are `outcome: "unknown"` with `safeToRetry: false`; a definitive `4xx/409/422`
+   is `outcome: "rejected"` (the API rolls those back) and is safe to resend after
+   correction. `ErrorBanner` tells the user to re-check before retrying.
+2. The client never retries — including idempotent-looking GETs — to keep the
+   behaviour predictable; callers decide.
+3. Vitest was added as a **dev/test-only** dependency (the app still ships only
+   `react` + `react-dom`); the run is Node-only and needs no browser runner.
+
+Verification (from `frontend/`): `npm test` → **33 passed** (3 files);
+`npm run lint` clean; `npm run build` (`tsc -b && vite build`) green (43 modules,
+~266 kB JS / ~7.5 kB CSS).
+
+Contract note for reviewers: `amount` is **input** for advances but a
+server-computed total elsewhere, which is why the protected-field guard is
+keyed by path rather than a single global list.
+
+Documentation: README §5.1 (frontend commands incl. `npm test`) and §7a (the
+"Shared API client" guarantees and its tests).
+
+
