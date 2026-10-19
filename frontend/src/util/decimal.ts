@@ -43,19 +43,35 @@ export function validateDecimal(value: string, rule: DecimalRule): string | null
   return null;
 }
 
-/** Group the integer part with thousands separators, keeping the string value. */
-export function groupMoney(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
-  const negative = value.startsWith("-");
-  const unsigned = negative ? value.slice(1) : value;
-  const [whole, fraction] = unsigned.split(".");
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  const body = fraction === undefined ? grouped : `${grouped}.${fraction}`;
-  return negative ? `-${body}` : body;
+const EM_DASH = "\u2014";
+
+/** Indian digit grouping: last three digits, then pairs (`12,34,567`). */
+function groupIndian(digits: string): string {
+  if (digits.length <= 3) return digits;
+  const last3 = digits.slice(-3);
+  const leading = digits.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ",");
+  return `${leading},${last3}`;
 }
 
-/** Money in rupees (display only). */
-export function money(value: string | null | undefined): string {
-  const grouped = groupMoney(value);
-  return grouped === "—" ? grouped : `₹${grouped}`;
+/**
+ * Group the integer part of a decimal string for display (Indian grouping) and
+ * keep the fractional part **verbatim**. This works on strings only, so the
+ * exact decimal value — including zeros such as `245.00` — is never parsed to a
+ * float and precision is never lost. Unparseable input is returned unchanged
+ * rather than silently reformatted.
+ */
+export function formatAmount(value: string | null | undefined): string {
+  if (value === null || value === undefined || value === "") return EM_DASH;
+  const trimmed = value.trim();
+  if (!isDecimal(trimmed)) return value;
+  const negative = trimmed.startsWith("-");
+  const [whole, fraction] = (negative ? trimmed.slice(1) : trimmed).split(".");
+  const body = fraction === undefined ? groupIndian(whole) : `${groupIndian(whole)}.${fraction}`;
+  return `${negative ? "-" : ""}${body}`;
+}
+
+/** Money in rupees, grouped, precision preserved (`₹1,23,456.78`). */
+export function formatMoney(value: string | null | undefined): string {
+  const amount = formatAmount(value);
+  return amount === EM_DASH ? amount : `\u20B9${amount}`;
 }

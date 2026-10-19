@@ -3,23 +3,35 @@
 // names from these maps. Caches are cleared after a create so new rows appear.
 
 import type { CropGrade, Farmer } from "./types";
-import { listFarmers, listGrades } from "./endpoints";
+import { collectPages } from "./client";
 
 let farmerMap: Map<number, Farmer> | null = null;
 let gradeMap: Map<number, CropGrade> | null = null;
 
+/**
+ * Load **every** farmer, not just the first page. The reference collections are
+ * paginated (default 20, max 100), so selection UIs must walk the `next` links or
+ * they silently hide records beyond the first page.
+ */
 export async function loadFarmerMap(signal?: AbortSignal): Promise<Map<number, Farmer>> {
   if (!farmerMap) {
-    const page = await listFarmers({ page_size: 100, ordering: "id" }, { signal });
-    farmerMap = new Map(page.results.map((farmer) => [farmer.id, farmer]));
+    const farmers = await collectPages<Farmer>("/farmers/", {
+      query: { page_size: 100, ordering: "id" },
+      signal,
+    });
+    farmerMap = new Map(farmers.map((farmer) => [farmer.id, farmer]));
   }
   return farmerMap;
 }
 
+/** Load **every** grade across all pages (same reasoning as farmers). */
 export async function loadGradeMap(signal?: AbortSignal): Promise<Map<number, CropGrade>> {
   if (!gradeMap) {
-    const page = await listGrades({ page_size: 100, ordering: "id" }, { signal });
-    gradeMap = new Map(page.results.map((grade) => [grade.id, grade]));
+    const grades = await collectPages<CropGrade>("/grades/", {
+      query: { page_size: 100, ordering: "id" },
+      signal,
+    });
+    gradeMap = new Map(grades.map((grade) => [grade.id, grade]));
   }
   return gradeMap;
 }

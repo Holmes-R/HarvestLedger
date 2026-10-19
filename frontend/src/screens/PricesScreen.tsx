@@ -4,11 +4,14 @@ import { createPriceEntry, listGrades, listPrices } from "../api/endpoints";
 import type { ApiError } from "../api/client";
 import { toApiError } from "../api/client";
 import type { PriceListEntry } from "../api/types";
-import { validateDecimal } from "../util/decimal";
+import { formatMoney, validateDecimal } from "../util/decimal";
 import { istToday } from "../util/dates";
 import { useAsync } from "../hooks/useAsync";
 import { PageHeader } from "../components/AppShell";
+import { Button } from "../components/Button";
+import { DataTable } from "../components/DataTable";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { Money } from "../components/format";
 import { DecimalInput, Field, Select, TextInput } from "../components/form";
 import { Empty, Loading } from "../components/Modal";
 import { Pagination } from "../components/Pagination";
@@ -83,7 +86,7 @@ export function PricesScreen() {
         effective_from: effectiveFrom,
       });
       setNotice(
-        `Recorded ₹${saved.price_per_kg}/kg for ${saved.crop_name} ${saved.crop_grade_code} from ${saved.effective_from}.`,
+        `Recorded ${formatMoney(saved.price_per_kg)}/kg for ${saved.crop_name} ${saved.crop_grade_code} from ${saved.effective_from}.`,
       );
       setPrice("");
       setRefreshKey((value) => value + 1);
@@ -142,9 +145,9 @@ export function PricesScreen() {
           </Field>
         </div>
         <div className="form-actions">
-          <button type="button" className="button" onClick={onSubmit} disabled={!valid || busy}>
-            {busy ? "Saving…" : "Add price"}
-          </button>
+          <Button onClick={onSubmit} disabled={!valid} pending={busy} pendingLabel="Saving…">
+            Add price
+          </Button>
         </div>
       </section>
 
@@ -161,6 +164,7 @@ export function PricesScreen() {
               }}
               placeholder="All crops"
               options={cropOptions}
+              ariaLabel="Filter by crop"
             />
             <Select
               value={filterGrade}
@@ -170,6 +174,7 @@ export function PricesScreen() {
               }}
               placeholder="All grades"
               options={filterGradeOptions}
+              ariaLabel="Filter by grade"
             />
           </div>
         </div>
@@ -179,7 +184,7 @@ export function PricesScreen() {
           <Empty>No price entries match.</Empty>
         ) : null}
         {entries.data && entries.data.results.length > 0 ? (
-          <table className="data-table">
+          <DataTable label="Price entries">
             <thead>
               <tr>
                 <th>Effective from</th>
@@ -194,11 +199,13 @@ export function PricesScreen() {
                   <td>{entry.effective_from}</td>
                   <td>{entry.crop_name}</td>
                   <td>{entry.crop_grade_code}</td>
-                  <td className="num">₹{entry.price_per_kg}</td>
+                  <td className="num">
+                    <Money value={entry.price_per_kg} suffix=" / kg" />
+                  </td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </DataTable>
         ) : null}
         {entries.data ? (
           <Pagination

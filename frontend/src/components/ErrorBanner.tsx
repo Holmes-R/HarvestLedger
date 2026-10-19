@@ -10,9 +10,11 @@ export function ErrorBanner({
   if (!error) return null;
   const fields = error.fieldMessages();
   return (
-    <div className="banner banner-error" role="alert">
+    <div className="banner banner-error" role="alert" aria-atomic="true">
       <div className="banner-head">
         <strong>
+          <span className="banner-severity">Error</span>
+          {" · "}
           {error.code}
           {error.status ? ` · HTTP ${error.status}` : ""}
         </strong>

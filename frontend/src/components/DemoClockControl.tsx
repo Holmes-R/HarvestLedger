@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { getDemoClock, setDemoClock } from "../api/client";
 import { isApiTimestamp } from "../util/dates";
+import { Button } from "./Button";
 import { Field, TextInput } from "./form";
 
 /**
@@ -34,16 +35,21 @@ export function DemoClockControl() {
 
   return (
     <div className="demo-clock">
-      <button
-        type="button"
-        className={current.enabled ? "button button-warn" : "button button-ghost"}
+      <Button
+        variant={current.enabled ? "warn" : "ghost"}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-controls="demo-clock-panel"
       >
         {current.enabled ? "Clock overridden" : "Demo clock"}
-      </button>
+      </Button>
       {open ? (
-        <div className="demo-clock-panel">
+        <div
+          className="demo-clock-panel"
+          id="demo-clock-panel"
+          role="region"
+          aria-label="Demo clock settings"
+        >
           <p className="muted">
             Demo-only. Requires the backend to have <code>ALLOW_REVIEW_CLOCK=true</code> and a
             matching key. Affects business-date decisions for requests only.
@@ -54,14 +60,16 @@ export function DemoClockControl() {
           <Field label="X-Review-Key (demo secret)">
             <TextInput value={key} onChange={setKey} type="text" placeholder="demo-review-key" />
           </Field>
-          {notice ? <p className="field-error">{notice}</p> : null}
+          {notice ? (
+            <p className="field-error" role="alert">
+              <span className="err-tag">Error:</span> {notice}
+            </p>
+          ) : null}
           <div className="demo-clock-actions">
-            <button type="button" className="button" onClick={apply}>
-              Apply
-            </button>
-            <button type="button" className="button button-ghost" onClick={clear}>
+            <Button onClick={apply}>Apply</Button>
+            <Button variant="ghost" onClick={clear}>
               Clear
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}

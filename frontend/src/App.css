@@ -27,6 +27,24 @@
   backdrop-filter: blur(6px);
 }
 
+/* Keyboard-only affordance; jumps focus past the header into the main region. */
+.skip-link {
+  position: absolute;
+  top: -56px;
+  left: 8px;
+  z-index: 100;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--green-700);
+  color: #fff;
+  font-weight: 700;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
 .app-header-inner {
   display: flex;
   flex-wrap: wrap;
@@ -233,6 +251,26 @@ a:focus-visible {
   font-size: 13px;
 }
 
+/* Textual severity marker: an error is never communicated by colour alone. */
+.err-tag,
+.banner-severity {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 0.85em;
+}
+
+.state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.state-loading {
+  color: var(--muted);
+}
+
 /* --- Buttons --------------------------------------------------------------- */
 
 button {
@@ -277,6 +315,42 @@ button {
 
 .button-warn:hover:not(:disabled) {
   background: #f7e6c4;
+}
+
+.button-danger {
+  border-color: #c97171;
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+.button-danger:hover:not(:disabled) {
+  background: #f6d9d9;
+}
+
+/* Pending-action spinner. Motion is decorative (aria-hidden); the button's
+   aria-busy state carries the meaning for assistive tech. */
+.spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 8px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2s;
+  }
 }
 
 .link-button {
@@ -408,8 +482,21 @@ button {
 
 /* --- Tables ---------------------------------------------------------------- */
 
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 10px;
+}
+
+.table-wrap:focus-visible {
+  outline: 3px solid #91c99a;
+  outline-offset: 2px;
+}
+
 .data-table {
   width: 100%;
+  min-width: max-content;
   border-collapse: collapse;
   font-size: 14px;
 }
@@ -432,6 +519,16 @@ button {
 .data-table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.money {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.money-suffix {
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .data-table tbody tr:hover {
@@ -525,6 +622,16 @@ button {
   gap: 4px;
 }
 
+.stored-result {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.stored-result h3 {
+  margin-top: 0;
+}
+
 /* --- Modal ----------------------------------------------------------------- */
 
 .modal-backdrop {
@@ -564,6 +671,15 @@ button {
 
 .modal-body {
   padding: 20px;
+}
+
+.modal-desc {
+  margin: 0 0 16px;
+  color: var(--green-900);
+}
+
+.confirm-actions {
+  margin-top: 20px;
 }
 
 .modal-foot {
@@ -621,5 +737,24 @@ button {
   .detail-grid {
     grid-template-columns: 1fr;
     gap: 4px 0;
+  }
+
+  /* Keep every action reachable: full-width, stacked, primary action last. */
+  .form-actions,
+  .panel-actions,
+  .page-head-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .form-actions .button,
+  .panel-actions .button,
+  .page-head-actions .button {
+    width: 100%;
+  }
+
+  .modal-head,
+  .modal-foot {
+    flex-wrap: wrap;
   }
 }

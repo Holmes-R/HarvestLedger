@@ -1,3 +1,5 @@
+import { Button } from "./Button";
+
 export function Pagination({
   count,
   page,
@@ -13,31 +15,31 @@ export function Pagination({
   const first = count === 0 ? 0 : (page - 1) * pageSize + 1;
   const last = Math.min(count, page * pageSize);
   return (
-    <div className="pagination">
-      <span className="muted">
+    <nav className="pagination" aria-label="Pagination">
+      <span className="muted" aria-live="polite">
         {count === 0 ? "No rows" : `${first}–${last} of ${count}`}
       </span>
       <div className="pagination-controls">
-        <button
-          type="button"
-          className="button button-ghost"
+        <Button
+          variant="ghost"
           onClick={() => onPage(page - 1)}
           disabled={page <= 1}
+          aria-label="Previous page"
         >
           Previous
-        </button>
+        </Button>
         <span className="muted">
           Page {page} / {totalPages}
         </span>
-        <button
-          type="button"
-          className="button button-ghost"
+        <Button
+          variant="ghost"
           onClick={() => onPage(page + 1)}
           disabled={page >= totalPages}
+          aria-label="Next page"
         >
           Next
-        </button>
+        </Button>
       </div>
-    </div>
+    </nav>
   );
 }

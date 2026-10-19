@@ -4,6 +4,7 @@ import { createCorrection, createDeliveryCorrection } from "../api/endpoints";
 import type { Correction, CorrectionWrite, GradeNoteKind } from "../api/types";
 import { validateDecimal } from "../util/decimal";
 import { useSubmit } from "../hooks/useSubmit";
+import { Button } from "./Button";
 import { ErrorBanner } from "./ErrorBanner";
 import { DecimalInput, Field, Select, TextInput } from "./form";
 import { Modal } from "./Modal";
@@ -94,12 +95,12 @@ export function CorrectionForm({
           needs a supplementary payout if the week is settled.
         </p>
         <div className="form-actions">
-          <button type="button" className="button button-ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button type="submit" className="button" disabled={!valid || submitting}>
-            {submitting ? "Recording…" : "Record note"}
-          </button>
+          </Button>
+          <Button type="submit" disabled={!valid} pending={submitting} pendingLabel="Recording…">
+            Record note
+          </Button>
         </div>
       </form>
     </Modal>

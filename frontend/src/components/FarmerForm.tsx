@@ -3,6 +3,7 @@ import { useState } from "react";
 import { createFarmer, updateFarmer } from "../api/endpoints";
 import type { Farmer, FarmerWrite } from "../api/types";
 import { isValidIndianMobile } from "../validation/phone";
+import { Button } from "./Button";
 import { ErrorBanner } from "./ErrorBanner";
 import { Field, TextInput } from "./form";
 import { Modal } from "./Modal";
@@ -71,12 +72,12 @@ export function FarmerForm({
           <TextInput id="farmer-bank" value={bankReference} onChange={setBankReference} />
         </Field>
         <div className="form-actions">
-          <button type="button" className="button button-ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button type="submit" className="button" disabled={!valid || submitting}>
-            {submitting ? "Saving…" : farmer ? "Save changes" : "Create farmer"}
-          </button>
+          </Button>
+          <Button type="submit" disabled={!valid} pending={submitting} pendingLabel="Saving…">
+            {farmer ? "Save changes" : "Create farmer"}
+          </Button>
         </div>
       </form>
     </Modal>

@@ -1,5 +1,12 @@
-import type { ChangeEvent, ReactNode } from "react";
+import { createContext, useContext, useId, type ChangeEvent, type ReactNode } from "react";
 
+/**
+ * A labelled form control. `Field` owns the label, help and error text and
+ * exposes the generated ids to the wrapped input through context, so the input
+ * is programmatically associated with its label and with its help/error text
+ * (`aria-describedby`) and is marked `aria-invalid`. Errors are then announced
+ * and associated, not merely tinted red.
+ */
 export interface FieldProps {
   label: string;
   htmlFor?: string;
@@ -8,15 +15,35 @@ export interface FieldProps {
   children: ReactNode;
 }
 
+interface FieldControl {
+  inputId?: string;
+  describedBy?: string;
+  invalid: boolean;
+}
+
+const FieldContext = createContext<FieldControl | null>(null);
+
 export function Field({ label, htmlFor, error, hint, children }: FieldProps) {
+  const generatedId = useId();
+  const inputId = htmlFor ?? generatedId;
+  const hintId = hint ? `${inputId}-hint` : undefined;
+  const errorId = error ? `${inputId}-error` : undefined;
+  const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+
   return (
     <div className="field">
-      <label htmlFor={htmlFor}>{label}</label>
-      {children}
-      {hint ? <p className="help">{hint}</p> : null}
+      <label htmlFor={inputId}>{label}</label>
+      <FieldContext.Provider value={{ inputId, describedBy, invalid: Boolean(error) }}>
+        {children}
+      </FieldContext.Provider>
+      {hint ? (
+        <p className="help" id={hintId}>
+          {hint}
+        </p>
+      ) : null}
       {error ? (
-        <p className="field-error" role="alert">
-          {error}
+        <p className="field-error" id={errorId} role="alert">
+          <span className="err-tag">Error:</span> {error}
         </p>
       ) : null}
     </div>
@@ -35,6 +62,7 @@ export interface TextInputProps {
   required?: boolean;
   invalid?: boolean;
   disabled?: boolean;
+  ariaLabel?: string;
 }
 
 export function TextInput({
@@ -49,13 +77,17 @@ export function TextInput({
   required,
   invalid,
   disabled,
+  ariaLabel,
 }: TextInputProps) {
+  const field = useContext(FieldContext);
+  const isInvalid = invalid ?? field?.invalid ?? false;
+
   function handle(event: ChangeEvent<HTMLInputElement>) {
     onChange(event.target.value);
   }
   return (
     <input
-      id={id}
+      id={id ?? field?.inputId}
       type={type}
       value={value}
       onChange={handle}
@@ -65,7 +97,9 @@ export function TextInput({
       inputMode={inputMode}
       required={required}
       disabled={disabled}
-      aria-invalid={invalid || undefined}
+      aria-label={ariaLabel}
+      aria-describedby={field?.describedBy}
+      aria-invalid={isInvalid || undefined}
     />
   );
 }
@@ -100,6 +134,7 @@ export interface SelectProps {
   placeholder?: string;
   disabled?: boolean;
   invalid?: boolean;
+  ariaLabel?: string;
 }
 
 export function Select({
@@ -110,14 +145,20 @@ export function Select({
   placeholder,
   disabled,
   invalid,
+  ariaLabel,
 }: SelectProps) {
+  const field = useContext(FieldContext);
+  const isInvalid = invalid ?? field?.invalid ?? false;
+
   return (
     <select
-      id={id}
+      id={id ?? field?.inputId}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       disabled={disabled}
-      aria-invalid={invalid || undefined}
+      aria-label={ariaLabel}
+      aria-describedby={field?.describedBy}
+      aria-invalid={isInvalid || undefined}
     >
       {placeholder ? <option value="">{placeholder}</option> : null}
       {options.map((option) => (

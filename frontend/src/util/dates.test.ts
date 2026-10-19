@@ -40,6 +40,13 @@ describe("isApiDate", () => {
     expect(isApiDate("2026-5-1")).toBe(false);
     expect(isApiDate("2026-05-01T00:00:00Z")).toBe(false);
   });
+
+  it("rejects impossible calendar dates", () => {
+    expect(isApiDate("2026-02-30")).toBe(false);
+    expect(isApiDate("2026-02-29")).toBe(false);
+    expect(isApiDate("2024-02-29")).toBe(true);
+    expect(isApiDate("2026-13-01")).toBe(false);
+  });
 });
 
 describe("isApiTimestamp", () => {

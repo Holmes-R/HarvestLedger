@@ -1,13 +1,16 @@
 import { useState, type ReactNode } from "react";
 
-import { getDelivery } from "../api/endpoints";
+import { getDelivery, getPayout } from "../api/endpoints";
 import { farmerLabel, gradeLabel } from "../api/lookups";
-import { formatDate, formatTimestamp } from "../util/dates";
+import { deliveryLockReason } from "../util/delivery";
 import { DELIVERY_KIND_LABEL, deliveryKindTone } from "../util/labels";
 import { navigate } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
 import { useLookups } from "../hooks/useLookups";
+import { Button } from "./Button";
 import { CorrectionForm } from "./CorrectionForm";
+import { DeliveryEditForm } from "./DeliveryEditForm";
+import { DateOnly, Money, Quantity, Timestamp } from "./format";
 import { ErrorBanner } from "./ErrorBanner";
 import { Loading } from "./Modal";
 import { StatusBadge } from "./StatusBadge";
@@ -32,9 +35,25 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
     [deliveryId],
   );
   const [correcting, setCorrecting] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const delivery = data;
   const isCorrection = delivery ? delivery.kind !== "PROCUREMENT" : false;
+
+  const payoutId = delivery?.payout ?? null;
+  const payout = useAsync(
+    (signal) =>
+      payoutId === null
+        ? Promise.resolve(undefined)
+        : getPayout(payoutId, { signal }),
+    [payoutId],
+  );
+
+  const lockReason = delivery
+    ? deliveryLockReason(delivery, payout.data?.status)
+    : null;
+  const checkingSettlement = payoutId !== null && payout.loading;
 
   return (
     <section className="panel">
@@ -52,14 +71,19 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
 
       {loading ? <Loading label="Loading delivery…" /> : null}
       <ErrorBanner error={error} />
+      {notice ? (
+        <div className="banner banner-ok" role="status">
+          {notice}
+        </div>
+      ) : null}
 
       {delivery ? (
         <>
           <dl className="detail-grid">
             <Row label="Farmer" value={farmerLabel(lookups.data?.farmers, delivery.farmer)} />
             <Row label="Grade" value={gradeLabel(lookups.data?.grades, delivery.crop_grade)} />
-            <Row label="Delivered on" value={formatDate(delivery.delivered_on)} />
-            <Row label="Accounting date" value={formatDate(delivery.accounting_date)} />
+            <Row label="Delivered on" value={<DateOnly value={delivery.delivered_on} />} />
+            <Row label="Accounting date" value={<DateOnly value={delivery.accounting_date} />} />
             {isCorrection ? (
               <>
                 <Row
@@ -78,26 +102,40 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
                     )
                   }
                 />
-                <Row label="Correction magnitude" value={`₹${delivery.correction_magnitude ?? "—"}`} />
+                <Row
+                  label="Correction magnitude"
+                  value={<Money value={delivery.correction_magnitude} />}
+                />
                 <Row label="Reason" value={delivery.reason || "—"} />
                 <Row
                   label="Signed amount"
-                  value={<strong>₹{delivery.amount ?? "—"}</strong>}
+                  value={
+                    <strong>
+                      <Money value={delivery.amount} />
+                    </strong>
+                  }
                 />
               </>
             ) : (
               <>
-                <Row label="Gross weight" value={`${delivery.gross_weight_kg ?? "—"} kg`} />
+                <Row label="Gross weight" value={<Quantity value={delivery.gross_weight_kg} unit="kg" />} />
                 <Row label="Moisture" value={`${delivery.moisture_percent ?? "—"}%`} />
                 <Row label="Threshold used" value={`${delivery.threshold_used ?? "—"}%`} />
                 <Row label="Deduction" value={`${delivery.deduction_percent}% · ${delivery.deduction_kg} kg`} />
-                <Row label="Net weight" value={`${delivery.net_kg} kg`} />
-                <Row label="Applied price" value={`₹${delivery.applied_price ?? "—"} / kg`} />
+                <Row label="Net weight" value={<Quantity value={delivery.net_kg} unit="kg" />} />
+                <Row label="Applied price" value={<Money value={delivery.applied_price} suffix=" / kg" />} />
                 <Row
                   label="Price entry"
                   value={delivery.price_list_entry ? `#${delivery.price_list_entry}` : "—"}
                 />
-                <Row label="Amount" value={<strong>₹{delivery.amount ?? "—"}</strong>} />
+                <Row
+                  label="Amount"
+                  value={
+                    <strong>
+                      <Money value={delivery.amount} />
+                    </strong>
+                  }
+                />
               </>
             )}
             <Row
@@ -117,15 +155,53 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
               }
             />
             <Row label="Calculation version" value={delivery.calculation_version} />
-            <Row label="Recorded at" value={formatTimestamp(delivery.recorded_at)} />
+            <Row label="Recorded at" value={<Timestamp value={delivery.recorded_at} />} />
           </dl>
 
-          {!isCorrection ? (
-            <div className="panel-actions">
-              <button type="button" className="button" onClick={() => setCorrecting(true)}>
-                Add correction
-              </button>
-            </div>
+          {isCorrection ? (
+            <p className="muted">
+              Correction notes are immutable. Record another note rather than editing.
+            </p>
+          ) : (
+            <>
+              {lockReason ? (
+                <p className="banner banner-warning" role="status">
+                  <strong>Read-only.</strong> {lockReason}
+                </p>
+              ) : null}
+              {payout.error ? (
+                <p className="muted">
+                  Settlement status could not be confirmed; editing is still refused by
+                  the server if the payout is finalised.
+                </p>
+              ) : null}
+              <div className="panel-actions">
+                {lockReason ? null : (
+                  <Button
+                    onClick={() => setEditing(true)}
+                    disabled={checkingSettlement || !lookups.data}
+                  >
+                    {checkingSettlement ? "Checking settlement…" : "Edit delivery"}
+                  </Button>
+                )}
+                <Button variant="ghost" onClick={() => setCorrecting(true)}>
+                  Add correction
+                </Button>
+              </div>
+            </>
+          )}
+
+          {editing && !lockReason ? (
+            <DeliveryEditForm
+              delivery={delivery}
+              grades={lookups.data?.grades}
+              onClose={() => setEditing(false)}
+              onSaved={(updated) => {
+                setEditing(false);
+                setNotice(`Delivery #${updated.id} updated.`);
+                reload();
+              }}
+            />
           ) : null}
 
           {correcting ? (

@@ -35,7 +35,7 @@ See [section 7a](#7a-frontend-m4-ui).
 | Backend | Django and Django REST Framework |
 | Frontend | React, TypeScript and Vite |
 | Database | PostgreSQL for development and tests |
-| Tests | pytest, pytest-django and pytest-cov (backend); Vitest (frontend API client) |
+| Tests | pytest, pytest-django and pytest-cov (backend); Vitest + Testing Library (frontend helpers, API client, hooks and components) |
 | Local environment | PostgreSQL service; Docker Compose is not configured |
 | CI | GitHub Actions |
 | Hosting | <actual providers> |
@@ -122,7 +122,7 @@ review key must never be exposed to the build. From `frontend/`:
 npm install
 npm run dev      # Vite dev server (default http://localhost:5173)
 npm run lint     # ESLint (flat config, typescript-eslint)
-npm run test     # Vitest unit tests for the API client and date helpers
+npm run test     # Vitest unit tests (API client, helpers, shared components)
 npm run build    # tsc -b && vite build
 ```
 
@@ -451,8 +451,8 @@ dependency — with four sections and deep links:
 
 | Route | Screen |
 |---|---|
-| `#/deliveries` | Delivery entry: capture form, live `POST /deliveries/preview/` breakdown, recent-deliveries list |
-| `#/deliveries/{id}` | Reusable delivery detail (frozen breakdown, payout link, "Add correction") |
+| `#/deliveries` | Delivery entry: validated capture form, debounced preview, authoritative stored result, recent-deliveries list |
+| `#/deliveries/{id}` | Reusable delivery detail (frozen breakdown, payout link, edit when permitted, "Add correction") |
 | `#/prices` | Price history: effective-dated entries with crop/grade filters |
 | `#/payouts` | Weekly payouts: generate a draft + statement list |
 | `#/payouts/{id}` | Payout statement: member deliveries, `Finalise` / `Mark paid` |
@@ -460,10 +460,12 @@ dependency — with four sections and deep links:
 
 **Reusable pieces.** `DeliveryDetail` is shared by the delivery list, the payout
 statement and the ledger (each row links to `#/deliveries/{id}` and, when a list
-only carries an id, the component fetches `GET /deliveries/{id}/`). Supporting
-forms are contextual modal panels — `FarmerForm`, `CropForm`, `AdvanceForm`,
-`CorrectionForm` — not separate dashboards. There is one HTTP client
-(`src/api/client.ts`) and one typed endpoint module (`src/api/endpoints.ts`).
+only carries an id, the component fetches `GET /deliveries/{id}/`). Delivery
+entry/edit are extracted into `DeliveryEntryForm` and `DeliveryEditForm` so the
+screen owns only list state. Supporting forms are contextual modal panels -
+`FarmerForm`, `CropForm`, `AdvanceForm`, `CorrectionForm` - not separate
+dashboards. There is one HTTP client (`src/api/client.ts`) and one typed endpoint
+module (`src/api/endpoints.ts`).
 
 **Shared API client.** `src/api/client.ts` is the single choke point for network
 access, and `src/api/endpoints.ts` exposes one typed function per operation
@@ -503,10 +505,86 @@ construction, decimal preservation, date serialisation, page following, envelope
 parsing, request-id handling, cancellation, the protected-field guard, and the
 no-retry / unknown-outcome behaviour for failed writes.
 
+**Shared UI shell and components.** `AppShell` provides the four-section
+navigation (hash routes), a keyboard "Skip to content" control, and the page
+header. Reusable primitives keep the screens consistent:
+
+- `Button` — one button with `primary`/`ghost`/`warn`/`danger` variants and a
+  `pending` state (`aria-busy`, spinner, disabled) for in-flight actions. It is
+  used for actions across the app, including pagination and the modals.
+- `DataTable` — the shared table wrapper: a labelled, keyboard-focusable scroll
+  region (`role="region"`, `tabIndex=0`) around `table.data-table`. On a phone
+  the table scrolls horizontally and every column, action and amount stays
+  reachable instead of being clipped or squeezed.
+- `Field` + `TextInput`/`DecimalInput`/`Select` — the label/`htmlFor`,
+  `aria-invalid` and `aria-describedby` links are wired automatically from the
+  field's help and error text, and the error text begins with a literal
+  "Error:" marker, so an error is never conveyed by colour alone.
+- `StatusBadge` — tone-coded badges that always carry a text label.
+- `Modal` / `ConfirmDialog` — accessible dialogs: `role="dialog"` (or
+  `alertdialog` for confirmations) labelled by the title and described by the
+  message, focus moved in on open and trapped on Tab, Escape/backdrop to close,
+  and focus returned to the trigger. `ConfirmDialog` guards finalise/mark-paid.
+- `Loading` / `Empty` / `ErrorBanner` — the async states: a polite live region
+  with a spinner, an empty message, field-level validation via `Field`, and a
+  server-error banner (`role="alert"`) showing the code, field messages and
+  request id.
+- `Money` / `DateOnly` / `Timestamp` / `Quantity` — display helpers. Money is
+  grouped from the decimal string (Indian grouping) without parsing to a float,
+  so precision survives; `DateOnly` formats the literal calendar date (no
+  timezone shift); `Timestamp` always renders in **Asia/Kolkata** with an `IST`
+  suffix and an explicit-zone tooltip.
+
+Component tests (`src/components/*.test.tsx`, jsdom) cover ARIA labelling and
+error association, the pending-button contract, dialog roles/Escape/focus
+trap/restore, money/date/IST formatting, and the error banner's unknown-write
+warning. `vitest`, `jsdom` and `@testing-library/*` are dev-only.
+
+**Delivery screen.** The entry flow is built around the server's calculation:
+
+- Inputs are farmer, crop, grade, delivery date, gross weight (3 dp) and
+  moisture (2 dp); decimals are validated as strings and never parsed to floats.
+  Changing the crop clears a grade that no longer belongs to it. The reference
+  selects load **every** page (`collectPages`, `page_size=100`, `ordering=id`),
+  not just the first `GET` page.
+- A preview is requested only when the form is valid. It is **debounced (400 ms)**,
+  abortable and latest-wins: every body has a key, the previous request is
+  aborted, its late settlement is ignored, and the old preview disappears
+  immediately when an input changes (not when the next response arrives). A
+  failed preview is shown inline (for example `price_not_found`, with advice to
+  add a price entry) and is not retried until the inputs change.
+- Record sends the **original inputs** (never preview results) as exactly
+  `{farmer, crop_grade, delivered_on, gross_weight_kg, moisture_percent}`. The
+  control disables and shows `Recording…` while in flight, so a double click
+  cannot create two deliveries; there is no automatic retry. A failure preserves
+  every input and uses the shared error banner (an ambiguous network/timeout
+  write warns that it may or may not have been applied).
+- On success the screen shows the **authoritative stored breakdown** returned by
+  `POST /deliveries/`, clears the weight/moisture fields, and compares the stored
+  values with the pre-save preview snapshot (applied price, price entry,
+  deduction, net weight, amount, accounting date). A price change is called out
+  with a money delta computed in minor units with `BigInt` (display only); the
+  API does not expose the price entry's effective date, so only its id is shown.
+- Editing is limited to procurement deliveries with no payout or a `DRAFT`
+  payout. A delivery read has no payout status, so the detail view fetches
+  `GET /payouts/{id}/`; corrections and finalised/paid statements are read-only
+  with an explanation, and a race is still rejected by the server (`409`), whose
+  message is shown in the edit dialog. The edit sends only the four accepted
+  keys (no farmer, no computed fields).
+
+Focused tests cover validation/grade matching, the price-change comparison and
+lock reasons (`src/util/delivery.test.ts`); debounce/abort/stale/error behaviour
+(`src/hooks/useDeliveryPreview.test.tsx`); the form's invalid/missing-price/
+save-failure/duplicate-submit/stored-comparison paths
+(`src/components/DeliveryEntryForm.test.tsx`); the edit payload and a rejected
+edit (`src/components/DeliveryEditForm.test.tsx`); and full-page lookups
+(`src/api/lookups.test.ts`).
+
 **Decisions and assumptions.**
 
-1. **No new dependencies.** React 19 + `react-dom` only; navigation, state and
-   formatting are hand-rolled to keep the scaffold as delivered.
+1. **No new runtime dependencies.** React 19 + `react-dom` only; navigation,
+   state and formatting are hand-rolled to keep the scaffold as delivered.
+   `vitest`, `jsdom` and `@testing-library/*` are **dev-only** test tooling.
 2. **Decimals stay strings.** Inputs are validated for scale (`src/util/decimal.ts`)
    and posted as strings; the API's returned strings are displayed as-is.
 3. **Ids resolve to names client-side.** Delivery/advance/correction reads return
@@ -517,16 +595,19 @@ no-retry / unknown-outcome behaviour for failed writes.
    them as optional and shows kind-specific fields.
 5. **Timestamps are shown as received** (ISO-8601 with a `+05:30` offset, not
    `Z`) via `src/util/dates.ts`.
-6. **Editability is discovered from responses.** A delivery has no payout-status
-   field, so the UI does not pre-judge editability; a refused write surfaces the
-   API's `409 payout_state_error`/`not_editable`.
+6. **Editability is checked before an edit is offered, and re-checked by the
+   server.** A delivery read has no payout-status field, so the detail view
+   fetches `GET /payouts/{id}/` when `payout` is set; only a delivery with no
+   payout or a `DRAFT` payout gets an Edit control. Corrections and
+   finalised/paid deliveries are explained as read-only. A race still surfaces
+   the API's `409 payout_state_error`/`not_editable` in the edit dialog.
 7. **Demo clock is gated and opt-in.** The header control only adds
    `X-Test-Clock`/`X-Review-Key` when a reviewer fills it in; the key lives in
    memory/`sessionStorage` and is never compiled into the bundle (see §10.1).
-8. **Verification is lint + typecheck + build + a real-API smoke**, because the
-   scaffold ships no test runner. `npm run build` fails the build on any
-   `tsc -b` type error (`verbatimModuleSyntax`, `erasableSyntaxOnly`,
-   `noUnusedLocals`) and `npm run lint` is clean.
+8. **Verification is lint + typecheck + tests + build + a real-API smoke.**
+   `npm test` covers helpers, the API client, hooks and components; `npm run
+   build` fails on any `tsc -b` type error (`verbatimModuleSyntax`,
+   `erasableSyntaxOnly`, `noUnusedLocals`) and `npm run lint` is clean.
 
 ## 8. Business rules and assumptions
 
@@ -728,8 +809,8 @@ is not available.
 
 **M1 schema, M2 services, the M3 HTTP API and the M4 procurement UI are
 implemented** (527 backend tests passing; see [COVERAGE.md](COVERAGE.md)). The
-frontend is verified by `npm run lint` and `npm run build` plus a live-API smoke
-run; it has no automated test runner of its own.
+frontend is verified by `npm test` (107 Vitest tests), `npm run lint`,
+`npm run build` and a live-API smoke run.
 
 1. The **API is unauthenticated** by design (every route is `AllowAny`; no user
    model). It must be placed behind authentication/authorisation before it is
@@ -737,10 +818,10 @@ run; it has no automated test runner of its own.
    only keyed surface.
 2. Not implemented at this milestone: production hosting/Docker wiring and CI.
    The frontend is a functional UI over the API with **focused unit tests for the
-   shared API client and date helpers** (`npm test`), but no component or
-   end-to-end browser tests, and there is no edit/delete affordance for
-   already-finalised financial records (by design — the API refuses those
-   writes).
+   shared API client, helpers, hooks and UI components** (`npm test`), but no
+   end-to-end browser tests. Editing is limited to procurement deliveries not
+   locked in a finalised/paid payout; there is no delete affordance (the API
+   intentionally exposes none for settled financial records).
 3. Deployment, hosting, live links and CI are not available yet and are left as
    placeholders earlier in this README.
 4. Concurrency is proven only against a single PostgreSQL instance with

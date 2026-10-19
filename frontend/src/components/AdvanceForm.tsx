@@ -2,9 +2,10 @@ import { useState } from "react";
 
 import { createAdvance } from "../api/endpoints";
 import type { Advance, AdvanceWrite, Farmer } from "../api/types";
-import { validateDecimal } from "../util/decimal";
+import { formatMoney, validateDecimal } from "../util/decimal";
 import { istToday } from "../util/dates";
 import { useSubmit } from "../hooks/useSubmit";
+import { Button } from "./Button";
 import { ErrorBanner } from "./ErrorBanner";
 import { DecimalInput, Field, Select, TextInput } from "./form";
 import { Modal } from "./Modal";
@@ -53,7 +54,7 @@ export function AdvanceForm({
             placeholder="Select a farmer…"
             options={farmers.map((farmer) => ({
               value: String(farmer.id),
-              label: `${farmer.name} — outstanding ₹${farmer.outstanding_advance}`,
+              label: `${farmer.name} — outstanding ${formatMoney(farmer.outstanding_advance)}`,
             }))}
           />
         </Field>
@@ -80,12 +81,12 @@ export function AdvanceForm({
           The outstanding balance is server-owned and increases by the amount exactly once.
         </p>
         <div className="form-actions">
-          <button type="button" className="button button-ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button type="submit" className="button" disabled={!valid || submitting}>
-            {submitting ? "Posting…" : "Post advance"}
-          </button>
+          </Button>
+          <Button type="submit" disabled={!valid} pending={submitting} pendingLabel="Posting…">
+            Post advance
+          </Button>
         </div>
       </form>
     </Modal>

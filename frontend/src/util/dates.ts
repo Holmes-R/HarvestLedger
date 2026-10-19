@@ -63,11 +63,27 @@ export function formatTimestamp(iso: string | null | undefined): string {
   return `${readableTimestamp.format(parsed)} IST`;
 }
 
-const apiDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+const apiDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-/** True when `value` is a bare calendar date the API accepts (`YYYY-MM-DD`). */
+/**
+ * True when `value` is a real calendar date the API accepts (`YYYY-MM-DD`).
+ * Shape-only checks would let impossible dates such as `2026-02-30` through to
+ * the API, where they become a late `400`; this also rejects them here.
+ */
 export function isApiDate(value: string): boolean {
-  return apiDatePattern.test(value);
+  const match = apiDatePattern.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, month - 1, day);
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
 }
 
 /**

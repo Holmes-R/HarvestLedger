@@ -4,6 +4,7 @@ import { createCrop, updateCrop } from "../api/endpoints";
 import type { Crop, CropWrite } from "../api/types";
 import { validateDecimal } from "../util/decimal";
 import { useSubmit } from "../hooks/useSubmit";
+import { Button } from "./Button";
 import { ErrorBanner } from "./ErrorBanner";
 import { DecimalInput, Field, TextInput } from "./form";
 import { Modal } from "./Modal";
@@ -93,12 +94,12 @@ export function CropForm({
           />
         </Field>
         <div className="form-actions">
-          <button type="button" className="button button-ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button type="submit" className="button" disabled={!valid || submitting}>
-            {submitting ? "Saving…" : crop ? "Save crop" : "Create crop"}
-          </button>
+          </Button>
+          <Button type="submit" disabled={!valid} pending={submitting} pendingLabel="Saving…">
+            {crop ? "Save crop" : "Create crop"}
+          </Button>
         </div>
       </form>
     </Modal>

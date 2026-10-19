@@ -3,13 +3,17 @@ import { useMemo, useState } from "react";
 import { generatePayout, getPayout, listPayouts, finalisePayout, markPayoutPaid } from "../api/endpoints";
 import { type ApiError, toApiError } from "../api/client";
 import type { Payout } from "../api/types";
-import { mondayOf, istToday, formatTimestamp } from "../util/dates";
+import { mondayOf, istToday } from "../util/dates";
 import { DELIVERY_KIND_LABEL, PAYOUT_STATUS_LABEL, deliveryKindTone, payoutStatusTone } from "../util/labels";
 import { navigate } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
 import { useLookups } from "../hooks/useLookups";
 import { PageHeader } from "../components/AppShell";
+import { Button } from "../components/Button";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DataTable } from "../components/DataTable";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { DateOnly, Money, Timestamp } from "../components/format";
 import { Field, Select, TextInput } from "../components/form";
 import { Empty, Loading } from "../components/Modal";
 import { Pagination } from "../components/Pagination";
@@ -86,14 +90,14 @@ function GenerateForm({ onGenerated }: { onGenerated: (payout: Payout) => void }
         </Field>
       </div>
       <div className="form-actions">
-        <button
-          type="button"
-          className="button"
+        <Button
           onClick={onGenerate}
-          disabled={farmerId === "" || busy}
+          disabled={farmerId === ""}
+          pending={busy}
+          pendingLabel="Generating…"
         >
-          {busy ? "Generating…" : "Generate payout"}
-        </button>
+          Generate payout
+        </Button>
       </div>
     </section>
   );
@@ -149,6 +153,7 @@ export function PayoutsScreen() {
               }}
               placeholder="All farmers"
               options={farmerOptions}
+              ariaLabel="Filter by farmer"
             />
             <Select
               value={filterStatus}
@@ -157,6 +162,7 @@ export function PayoutsScreen() {
                 setPage(1);
               }}
               placeholder="All statuses"
+              ariaLabel="Filter by status"
               options={[
                 { value: "DRAFT", label: "Draft" },
                 { value: "FINALISED", label: "Finalised" },
@@ -171,7 +177,7 @@ export function PayoutsScreen() {
           <Empty>No payouts match.</Empty>
         ) : null}
         {payouts.data && payouts.data.results.length > 0 ? (
-          <table className="data-table">
+          <DataTable label="Payout statements">
             <thead>
               <tr>
                 <th>#</th>
@@ -189,7 +195,7 @@ export function PayoutsScreen() {
                 <tr key={payout.id}>
                   <td className="num">{payout.id}</td>
                   <td>
-                    {payout.week_start} → {payout.week_end}
+                    <DateOnly value={payout.week_start} /> → <DateOnly value={payout.week_end} />
                   </td>
                   <td>{payout.farmer_name}</td>
                   <td>
@@ -197,9 +203,15 @@ export function PayoutsScreen() {
                       {PAYOUT_STATUS_LABEL[payout.status]}
                     </StatusBadge>
                   </td>
-                  <td className="num">₹{payout.gross_amount}</td>
-                  <td className="num">₹{payout.advance_deduction}</td>
-                  <td className="num">₹{payout.net_amount}</td>
+                  <td className="num">
+                    <Money value={payout.gross_amount} />
+                  </td>
+                  <td className="num">
+                    <Money value={payout.advance_deduction} />
+                  </td>
+                  <td className="num">
+                    <Money value={payout.net_amount} />
+                  </td>
                   <td>
                     <button
                       type="button"
@@ -212,7 +224,7 @@ export function PayoutsScreen() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </DataTable>
         ) : null}
         {payouts.data ? (
           <Pagination
@@ -234,12 +246,14 @@ export function PayoutDetail({ payoutId, onBack }: { payoutId: number; onBack: (
   );
   const [actionError, setActionError] = useState<ApiError | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState<null | "finalise" | "mark-paid">(null);
 
   async function act(action: () => Promise<unknown>) {
     setBusy(true);
     setActionError(undefined);
     try {
       await action();
+      setConfirming(null);
       reload();
     } catch (cause) {
       setActionError(toApiError(cause));
@@ -273,27 +287,37 @@ export function PayoutDetail({ payoutId, onBack }: { payoutId: number; onBack: (
             <dd>{data.farmer_name}</dd>
             <dt>Week</dt>
             <dd>
-              {data.week_start} → {data.week_end}
+              <DateOnly value={data.week_start} /> → <DateOnly value={data.week_end} />
             </dd>
             <dt>Gross</dt>
-            <dd>₹{data.gross_amount}</dd>
+            <dd>
+              <Money value={data.gross_amount} />
+            </dd>
             <dt>Advance deduction</dt>
-            <dd>₹{data.advance_deduction}</dd>
+            <dd>
+              <Money value={data.advance_deduction} />
+            </dd>
             <dt>Net payable</dt>
             <dd>
-              <strong>₹{data.net_amount}</strong>
+              <strong>
+                <Money value={data.net_amount} />
+              </strong>
             </dd>
             <dt>Finalised</dt>
-            <dd>{formatTimestamp(data.finalised_at)}</dd>
+            <dd>
+              <Timestamp value={data.finalised_at} />
+            </dd>
             <dt>Paid</dt>
-            <dd>{formatTimestamp(data.paid_at)}</dd>
+            <dd>
+              <Timestamp value={data.paid_at} />
+            </dd>
           </dl>
 
           <h3>Statement lines</h3>
           {data.deliveries.length === 0 ? (
             <Empty>No member deliveries.</Empty>
           ) : (
-            <table className="data-table">
+            <DataTable label="Statement lines">
               <thead>
                 <tr>
                   <th>#</th>
@@ -309,7 +333,7 @@ export function PayoutDetail({ payoutId, onBack }: { payoutId: number; onBack: (
                   <tr key={delivery.id}>
                     <td className="num">{delivery.id}</td>
                     <td>
-                      {delivery.delivered_on ?? delivery.accounting_date ?? "—"}
+                      <DateOnly value={delivery.delivered_on ?? delivery.accounting_date} />
                     </td>
                     <td>
                       <StatusBadge tone={deliveryKindTone(delivery.kind)}>
@@ -317,7 +341,9 @@ export function PayoutDetail({ payoutId, onBack }: { payoutId: number; onBack: (
                       </StatusBadge>
                     </td>
                     <td className="num">{delivery.net_kg}</td>
-                    <td className="num">₹{delivery.amount ?? "—"}</td>
+                    <td className="num">
+                      <Money value={delivery.amount} />
+                    </td>
                     <td>
                       <button
                         type="button"
@@ -330,34 +356,52 @@ export function PayoutDetail({ payoutId, onBack }: { payoutId: number; onBack: (
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </DataTable>
           )}
 
           <div className="panel-actions">
             {data.status === "DRAFT" ? (
-              <button
-                type="button"
-                className="button"
-                disabled={busy}
-                onClick={() => act(() => finalisePayout(data.id))}
-              >
-                {busy ? "Working…" : "Finalise"}
-              </button>
+              <Button onClick={() => setConfirming("finalise")} disabled={busy}>
+                Finalise
+              </Button>
             ) : null}
             {data.status === "FINALISED" ? (
-              <button
-                type="button"
-                className="button"
-                disabled={busy}
-                onClick={() => act(() => markPayoutPaid(data.id))}
-              >
-                {busy ? "Working…" : "Mark paid"}
-              </button>
+              <Button onClick={() => setConfirming("mark-paid")} disabled={busy}>
+                Mark paid
+              </Button>
             ) : null}
             {data.status === "PAID" ? (
               <p className="muted">This payout is settled; later corrections need a supplementary payout.</p>
             ) : null}
           </div>
+
+          {confirming === "finalise" ? (
+            <ConfirmDialog
+              title="Finalise this payout?"
+              message={`Finalising statement #${data.id} locks it for ${data.farmer_name}. It can then only be marked paid, and settled corrections need a supplementary payout.`}
+              confirmLabel="Finalise"
+              pending={busy}
+              pendingLabel="Finalising…"
+              onCancel={() => setConfirming(null)}
+              onConfirm={() => act(() => finalisePayout(data.id))}
+            >
+              <ErrorBanner error={actionError} />
+            </ConfirmDialog>
+          ) : null}
+
+          {confirming === "mark-paid" ? (
+            <ConfirmDialog
+              title="Mark this payout paid?"
+              message={`Marking statement #${data.id} paid records the money as handed over to ${data.farmer_name}. This is the final state for the week.`}
+              confirmLabel="Mark paid"
+              pending={busy}
+              pendingLabel="Marking paid…"
+              onCancel={() => setConfirming(null)}
+              onConfirm={() => act(() => markPayoutPaid(data.id))}
+            >
+              <ErrorBanner error={actionError} />
+            </ConfirmDialog>
+          ) : null}
         </>
       ) : null}
     </section>

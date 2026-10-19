@@ -13,6 +13,13 @@ const NAV = [
 export function AppShell({ active, children }: { active: string; children: ReactNode }) {
   return (
     <>
+      <button
+        type="button"
+        className="skip-link"
+        onClick={() => document.getElementById("main-content")?.focus()}
+      >
+        Skip to content
+      </button>
       <header className="app-header">
         <div className="app-header-inner">
           <a className="brand" href="#/deliveries">
@@ -37,7 +44,9 @@ export function AppShell({ active, children }: { active: string; children: React
           <DemoClockControl />
         </div>
       </header>
-      <main className="app-main">{children}</main>
+      <main className="app-main" id="main-content" tabIndex={-1}>
+        {children}
+      </main>
     </>
   );
 }

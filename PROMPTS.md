@@ -640,4 +640,154 @@ keyed by path rather than a single global list.
 Documentation: README §5.1 (frontend commands incl. `npm test`) and §7a (the
 "Shared API client" guarantees and its tests).
 
+## Entry 16 — Application shell and shared UI components
+
+> Build the application shell and shared UI components using the existing styling
+> approach and minimal dependencies: navigation between the four principal
+> screens; consistent forms, tables, buttons and status badges; loading, empty,
+> validation-error and server-error states; pending-action controls; accessible
+> confirmation dialogs; safe decimal/money formatting; IST timestamp formatting.
+> Phone-width layouts must retain all actions and financial values; labels,
+> keyboard access, focus handling and error associations must work; errors must
+> not be communicated through colour alone; currency formatting must not lose
+> decimal precision; date-only values must not shift through timezone conversion;
+> timestamps must explicitly use Asia/Kolkata. No decorative charts. Add focused
+> shared-component tests.
+
+Produced (`frontend/`):
+
+- `src/components/Button.tsx` — one button primitive with
+  `primary`/`ghost`/`warn`/`danger` variants and a `pending` state (`aria-busy`,
+  decorative spinner, disabled). Adopted across screens, forms, pagination and
+  dialogs so in-flight actions are consistent.
+- `src/components/DataTable.tsx` — a labelled, keyboard-focusable scroll region
+  (`role="region"`, `tabIndex=0`) around `table.data-table`.
+- `src/components/ConfirmDialog.tsx` — an `alertdialog` with a described message,
+  Escape/backdrop cancel, and a pending confirm control; now guards
+  finalise/mark-paid.
+- `src/components/format.tsx` — `Money`, `DateOnly`, `Timestamp`, `Quantity`.
+- `src/components/Modal.tsx` — focus moved in on open, Tab trapped, Escape and
+  backdrop close, focus restored to the trigger; `role`/`aria-labelledby`/
+  `aria-describedby`; `Loading` is a polite live region with a spinner.
+- `src/components/form.tsx` — `Field` now owns the generated ids and passes
+  `inputId`/`describedBy`/`invalid` to `TextInput`, `DecimalInput` and `Select`
+  through context, wiring label, `aria-describedby` and `aria-invalid`; error text
+  carries a literal "Error:" marker.
+- `src/util/decimal.ts` — `formatAmount`/`formatMoney` group the integer part
+  (Indian grouping) from the **string** and keep the fractional part verbatim
+  (no float parsing, trailing zeros preserved).
+- `src/components/ErrorBanner.tsx` — textual severity label plus code/status,
+  field messages and request id; keeps the unknown-write warning.
+- `src/components/AppShell.tsx` — skip-to-content control (a button, because a
+  hash link would collide with the hash router) and focusable main region.
+- Screens/details/forms updated to use `DataTable`, `Money`, `DateOnly`,
+  `Timestamp`, `Button` and `ConfirmDialog`; filter selects gained labels.
+- `src/App.css` — `.table-wrap` horizontal scrolling (with `min-width: max-content`
+  so columns and amounts are never squeezed), money tabular numbers, danger
+  button, spinner, dialog description, skip link, focus-visible on the scroll
+  region, and phone-width stacking of actions.
+- `vitest.config.ts` — includes `*.test.tsx`; component tests opt into jsdom with
+  a per-file pragma. Added `jsdom`, `@testing-library/react` and
+  `@testing-library/user-event` as **dev-only** dependencies.
+- Tests — `src/util/decimal.test.ts`, `src/components/{format,Button,form,Modal,ErrorBanner,DataTable,StatusBadge,ConfirmDialog}.test.tsx`.
+
+Decisions/assumptions:
+
+1. **Confirmation is only for irreversible/financial transitions.** Finalise and
+   mark-paid (and future destructive actions) use `ConfirmDialog`; ordinary
+   creates/edits submit directly with pending controls.
+2. **Date-only vs timestamps are separate components.** `DateOnly` formats the
+   literal `YYYY-MM-DD` (never converted through a timezone); `Timestamp` always
+   formats in Asia/Kolkata, appends `IST`, and shows the raw instant + zone in
+   its tooltip.
+3. **No precision-by-formatting shortcuts.** `formatMoney` never calls `Number`;
+   it splits the string and groups the integer digits.
+4. **The skip link is a button**, because the router treats `#/...` as navigation.
+5. **Phone width keeps everything reachable by scrolling, not hiding.** Tables
+   live in a focusable scroll region rather than dropping columns or actions.
+
+Verification (from `frontend/`): `npm test` → **77 passed** (12 files);
+`npm run lint` clean; `npm run build` (`tsc -b && vite build`) green (47 modules,
+~271 kB JS / ~8.9 kB CSS).
+
+Documentation: README §7a ("Shared UI shell and components"); the frontend
+decision now notes that Vitest/jsdom/testing-library are dev-only.
+
+## Entry 17 — Delivery screen against the real API
+
+> Implement the delivery screen against the real API: farmer/crop/grade/date/
+> gross/moisture inputs with decimal strings; clear an invalid grade on crop
+> change; load paginated reference data; debounce/cancel previews and never let
+> a stale response win; save the original inputs only; show the authoritative
+> stored result and how it differs from the preview; preserve inputs on failure;
+> prevent duplicate submits; do not blindly retry; permit permitted edits while
+> making settled deliveries read-only and explaining why. Add focused tests.
+
+Produced (`frontend/`):
+
+- `src/api/lookups.ts` — farmers and grades are loaded with `collectPages`
+  (`page_size=100`, `ordering=id`), so selection UIs no longer hide records
+  beyond the first API page.
+- `src/util/delivery.ts` — pure validation (farmer/crop/grade/date/3-dp positive
+  gross/2-dp positive moisture), grade↔crop matching, preview-vs-stored
+  comparison (price, entry, deduction, net, amount, accounting date),
+  `moneyDelta` in minor units with `BigInt` (display only), and
+  `deliveryLockReason` (corrections immutable; FINALISED/PAID locked).
+- `src/hooks/useDeliveryPreview.ts` — debounced (400 ms), abortable,
+  latest-wins preview. A key derived from the body invalidates an old preview
+  immediately and ignores late settlements; nothing is requested for invalid
+  input, and errors are not retried until the inputs change.
+- `src/components/DeliveryEntryForm.tsx` — validated form, inline preview
+  errors (including missing price), authoritative stored breakdown, stored-vs-
+  preview comparison and delta, pending/disabled Record control, preserved
+  inputs and unknown-write warning on failure, inputs cleared only on success.
+- `src/screens/DeliveriesScreen.tsx` — now composes `DeliveryEntryForm`, keeps
+  the recent-deliveries list and refreshes it after a save.
+- `src/components/DeliveryEditForm.tsx` — prefilled edit modal; PATCHes exactly
+  `{crop_grade, delivered_on, gross_weight_kg, moisture_percent}` (farmer and
+  computed fields are never sent); server errors stay in the dialog with the
+  inputs intact.
+- `src/components/DeliveryDetail.tsx` — fetches `GET /payouts/{id}/` when a
+  payout is linked, offers Edit only when the delivery is unlocked, explains
+  read-only corrections/settled statements, and shows a confirmation after a
+  successful edit.
+- `src/util/dates.ts` — `isApiDate` now also rejects impossible calendar dates
+  (`2026-02-30`, `2026-02-29`) instead of sending them to a late `400`.
+- `src/App.css` — `.stored-result` separation for the authoritative breakdown.
+- Tests — `src/util/delivery.test.ts`, `src/hooks/useDeliveryPreview.test.tsx`,
+  `src/components/DeliveryEntryForm.test.tsx`,
+  `src/components/DeliveryEditForm.test.tsx`, `src/api/lookups.test.ts`.
+
+Decisions/assumptions:
+
+1. **Save the original inputs, never the preview.** The preview is a hint; the
+   POST body is always the six user inputs and the stored response is what the
+   UI presents as truth.
+2. **A preview failure is inline, not a write warning.** `POST /deliveries/preview/`
+   has no side effects, so `price_not_found`/`moisture_exceeds_maximum`/
+   `future_delivery_date` are shown as preview guidance rather than the shared
+   unknown-outcome write banner.
+3. **Latest-wins by key.** The debounce is cancelled on change; each run has its
+   own `AbortController`; a response is accepted only if its key still matches,
+   so a slow old preview cannot overwrite a newer one.
+4. **Show what actually changed.** The stored response is compared with the
+   preview snapshot captured at submit time; the price delta is computed from
+   decimal strings in minor units, never through floats.
+5. **Read-only is explained before it is enforced.** Settlement status comes
+   from the linked payout; the edit control is hidden for corrections and
+   finalised/paid payouts with a reason, while the API remains the final
+   authority (a race shows its `409`).
+6. **Reference data is walked, not truncated.** All pages are fetched so the
+   selects are complete; the list endpoint's own pagination remains explicit.
+
+Verification (from `frontend/`): `npm test` → **107 passed** (17 files);
+`npm run lint` clean; `npm run build` (`tsc -b && vite build`) green (51
+modules, ~282 kB JS / ~9.0 kB CSS). Live smoke against the real API (temporary
+delivery, removed afterwards): preview `applied_price=25.75`,
+`net_kg=100.00000`, `amount=2575.00`; create succeeded; PATCH
+`gross_weight_kg=120.500` returned `net_kg=120.50000`, `amount=3102.88`.
+
+Documentation: README §3 (test stack), §7a ("Delivery screen" plus decisions 6
+and 8), §11; `PROMPTS.md` Entry 17.
+
 

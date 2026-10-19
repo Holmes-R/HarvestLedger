@@ -2,13 +2,14 @@ import { useMemo, useState } from "react";
 
 import { getLedger } from "../api/endpoints";
 import type { LedgerEvent } from "../api/types";
-import { formatTimestamp } from "../util/dates";
 import { LEDGER_EVENT_LABEL } from "../util/labels";
 import { navigate } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
 import { useLookups } from "../hooks/useLookups";
 import { PageHeader } from "../components/AppShell";
+import { DataTable } from "../components/DataTable";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { DateOnly, Money, Timestamp } from "../components/format";
 import { Field, Select, TextInput } from "../components/form";
 import { Empty, Loading } from "../components/Modal";
 import { Pagination } from "../components/Pagination";
@@ -145,31 +146,43 @@ export function LedgerScreen() {
               <div className="stat-grid">
                 <div className="stat">
                   <span className="muted">Outstanding advance</span>
-                  <strong>₹{summary.outstanding_advance}</strong>
+                  <strong>
+                    <Money value={summary.outstanding_advance} />
+                  </strong>
                 </div>
                 <div className="stat">
                   <span className="muted">Settled earnings</span>
-                  <strong>₹{summary.settled_earnings}</strong>
+                  <strong>
+                    <Money value={summary.settled_earnings} />
+                  </strong>
                 </div>
                 <div className="stat">
                   <span className="muted">Total advances</span>
-                  <strong>₹{summary.total_advances}</strong>
+                  <strong>
+                    <Money value={summary.total_advances} />
+                  </strong>
                 </div>
                 <div className="stat">
                   <span className="muted">Total recovered</span>
-                  <strong>₹{summary.total_recovered}</strong>
+                  <strong>
+                    <Money value={summary.total_recovered} />
+                  </strong>
                 </div>
                 <div className="stat">
                   <span className="muted">Draft projection</span>
-                  <strong>₹{summary.draft_projection}</strong>
+                  <strong>
+                    <Money value={summary.draft_projection} />
+                  </strong>
                 </div>
                 <div className="stat">
                   <span className="muted">Unassigned earnings</span>
-                  <strong>₹{summary.unassigned_earnings}</strong>
+                  <strong>
+                    <Money value={summary.unassigned_earnings} />
+                  </strong>
                 </div>
               </div>
               <p className="muted">
-                Reconciliation difference ₹{summary.reconciliation.difference} ·{" "}
+                Reconciliation difference <Money value={summary.reconciliation.difference} /> ·{" "}
                 {summary.reconciliation.is_reconciled
                   ? "stored balance matches advances minus recoveries."
                   : "stored balance does not match the recomputed balance."}{" "}
@@ -192,7 +205,7 @@ export function LedgerScreen() {
               <Empty>No events in this window.</Empty>
             ) : null}
             {ledger.data && ledger.data.results.length > 0 ? (
-              <table className="data-table">
+              <DataTable label="Ledger timeline">
                 <thead>
                   <tr>
                     <th>Date</th>
@@ -206,15 +219,21 @@ export function LedgerScreen() {
                 <tbody>
                   {ledger.data.results.map((event) => (
                     <tr key={`${event.event_type}-${event.id}`}>
-                      <td>{event.date}</td>
+                      <td>
+                        <DateOnly value={event.date} />
+                      </td>
                       <td>
                         <StatusBadge tone={eventTone(event)}>
                           {LEDGER_EVENT_LABEL[event.event_type]}
                         </StatusBadge>
                       </td>
                       <td>{eventDescription(event)}</td>
-                      <td className="num">₹{event.amount}</td>
-                      <td>{formatTimestamp(event.advance?.created_at ?? null)}</td>
+                      <td className="num">
+                        <Money value={event.amount} />
+                      </td>
+                      <td>
+                        <Timestamp value={event.advance?.created_at ?? null} />
+                      </td>
                       <td>
                         {event.event_type === "DELIVERY" || event.event_type === "CORRECTION" ? (
                           <button
@@ -237,7 +256,7 @@ export function LedgerScreen() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </DataTable>
             ) : null}
             {ledger.data ? (
               <Pagination
