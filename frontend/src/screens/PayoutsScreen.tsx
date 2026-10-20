@@ -1,107 +1,28 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { generatePayout, getPayout, listPayouts, finalisePayout, markPayoutPaid } from "../api/endpoints";
-import { type ApiError, toApiError } from "../api/client";
+import { isAbortError, toApiError, type ApiError } from "../api/client";
+import { getFarmer, getPayout, listPayouts } from "../api/endpoints";
 import type { Payout } from "../api/types";
-import { mondayOf, istToday } from "../util/dates";
-import { DELIVERY_KIND_LABEL, PAYOUT_STATUS_LABEL, deliveryKindTone, payoutStatusTone } from "../util/labels";
-import { navigate } from "../hooks/useHashRoute";
+import { navigate, useHashRoute } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
 import { useLookups } from "../hooks/useLookups";
 import { PageHeader } from "../components/AppShell";
-import { Button } from "../components/Button";
-import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable } from "../components/DataTable";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { DateOnly, Money, Timestamp } from "../components/format";
-import { Field, Select, TextInput } from "../components/form";
+import { DateOnly, Money } from "../components/format";
+import { Select } from "../components/form";
 import { Empty, Loading } from "../components/Modal";
 import { Pagination } from "../components/Pagination";
+import { PayoutGenerateForm } from "../components/PayoutGenerateForm";
+import { PayoutStatement } from "../components/PayoutStatement";
 import { StatusBadge } from "../components/StatusBadge";
+import {
+  PAYOUT_STATUS_LABEL,
+  payoutStatusTone,
+} from "../util/labels";
+import { ledgerContextSuffix } from "../util/ledger";
 
 const PAGE_SIZE = 20;
-
-function GenerateForm({ onGenerated }: { onGenerated: (payout: Payout) => void }) {
-  const lookups = useLookups();
-  const [farmerId, setFarmerId] = useState("");
-  const [weekStart, setWeekStart] = useState(mondayOf(istToday()));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<ApiError | undefined>(undefined);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const farmerOptions = useMemo(() => {
-    const farmers = lookups.data ? [...lookups.data.farmers.values()] : [];
-    return farmers
-      .map((farmer) => ({ value: String(farmer.id), label: `${farmer.name} · ${farmer.village}` }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [lookups.data]);
-
-  async function onGenerate() {
-    setBusy(true);
-    setError(undefined);
-    setNotice(null);
-    try {
-      const result = await generatePayout({
-        farmer: Number(farmerId),
-        week_start: weekStart,
-      });
-      if (result.payout) {
-        onGenerated(result.payout);
-      } else {
-        setNotice(
-          result.reason === "NO_ELIGIBLE_DELIVERIES"
-            ? "No eligible deliveries for that week — nothing to generate."
-            : `Nothing generated (${result.reason ?? "unknown reason"}).`,
-        );
-      }
-    } catch (cause) {
-      setError(toApiError(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="panel">
-      <h2>Generate weekly payout</h2>
-      <ErrorBanner error={error} />
-      {notice ? <div className="banner banner-ok">{notice}</div> : null}
-      <div className="form-row">
-        <Field label="Farmer" htmlFor="g-farmer">
-          <Select
-            id="g-farmer"
-            value={farmerId}
-            onChange={setFarmerId}
-            placeholder="Select a farmer…"
-            options={farmerOptions}
-          />
-        </Field>
-        <Field
-          label="Week (any day; normalised to Monday)"
-          htmlFor="g-week"
-          hint={`IST Monday: ${weekStart}`}
-        >
-          <TextInput
-            id="g-week"
-            type="date"
-            value={weekStart}
-            onChange={(value) => setWeekStart(mondayOf(value))}
-          />
-        </Field>
-      </div>
-      <div className="form-actions">
-        <Button
-          onClick={onGenerate}
-          disabled={farmerId === ""}
-          pending={busy}
-          pendingLabel="Generating…"
-        >
-          Generate payout
-        </Button>
-      </div>
-    </section>
-  );
-}
 
 export function PayoutsScreen() {
   const lookups = useLookups();
@@ -134,11 +55,13 @@ export function PayoutsScreen() {
     <>
       <PageHeader
         title="Weekly payouts"
-        subtitle="Mon–Sun statements. Finalise a draft, then mark it paid."
+        subtitle="Monday–Sunday statements. Generate a Draft, confirm its effect, finalise it, then mark it paid."
       />
 
-      <GenerateForm
+      <PayoutGenerateForm
+        farmers={lookups.data?.farmers}
         onGenerated={(payout) => navigate(`#/payouts/${payout.id}`)}
+        onChanged={payouts.reload}
       />
 
       <section className="panel">
@@ -181,7 +104,7 @@ export function PayoutsScreen() {
             <thead>
               <tr>
                 <th>#</th>
-                <th>Week</th>
+                <th>Week (Mon–Sun)</th>
                 <th>Farmer</th>
                 <th>Status</th>
                 <th className="num">Gross</th>
@@ -195,7 +118,8 @@ export function PayoutsScreen() {
                 <tr key={payout.id}>
                   <td className="num">{payout.id}</td>
                   <td>
-                    <DateOnly value={payout.week_start} /> → <DateOnly value={payout.week_end} />
+                    <DateOnly value={payout.week_start} /> –{" "}
+                    <DateOnly value={payout.week_end} />
                   </td>
                   <td>{payout.farmer_name}</td>
                   <td>
@@ -239,171 +163,108 @@ export function PayoutsScreen() {
   );
 }
 
-export function PayoutDetail({ payoutId, onBack }: { payoutId: number; onBack: () => void }) {
-  const { data, error, loading, reload } = useAsync(
-    (signal) => getPayout(payoutId, { signal }),
-    [payoutId],
-  );
-  const [actionError, setActionError] = useState<ApiError | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState<null | "finalise" | "mark-paid">(null);
+interface DetailData {
+  payout: Payout;
+  statementSet: Payout[];
+  outstanding: string;
+}
 
-  async function act(action: () => Promise<unknown>) {
-    setBusy(true);
-    setActionError(undefined);
-    try {
-      await action();
-      setConfirming(null);
-      reload();
-    } catch (cause) {
-      setActionError(toApiError(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
+interface DetailState {
+  id: number | null;
+  token: number;
+  data?: DetailData;
+  error?: ApiError;
+}
+
+function usePayoutDetail(payoutId: number) {
+  const [token, setToken] = useState(0);
+  const [state, setState] = useState<DetailState>({ id: null, token: -1 });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const payout = await getPayout(payoutId, { signal: controller.signal });
+        // Read the week back so supplementary statements are visible, and the
+        // farmer so the balance shown with the statement is refreshed together.
+        const [sameWeek, farmer] = await Promise.all([
+          listPayouts(
+            {
+              farmer: payout.farmer,
+              week: payout.week_start,
+              ordering: "id",
+              page_size: 100,
+            },
+            { signal: controller.signal },
+          ),
+          getFarmer(payout.farmer, { signal: controller.signal }),
+        ]);
+        if (controller.signal.aborted) return;
+        setState({
+          id: payoutId,
+          token,
+          data: {
+            payout,
+            statementSet: sameWeek.results,
+            outstanding: farmer.outstanding_advance,
+          },
+        });
+      } catch (cause) {
+        if (controller.signal.aborted || isAbortError(cause)) return;
+        setState((prev) => ({
+          id: payoutId,
+          token,
+          data: prev.id === payoutId ? prev.data : undefined,
+          error: toApiError(cause),
+        }));
+      }
+    })();
+    return () => controller.abort();
+  }, [payoutId, token]);
+
+  // A reload keeps the statement mounted (only the first load shows a spinner);
+  // changing payout id starts clean, so another farmer's figures never linger.
+  const settled = state.id === payoutId && state.token === token;
+  return {
+    data: state.id === payoutId ? state.data : undefined,
+    error: settled ? state.error : undefined,
+    loading: !settled,
+    reload: () => setToken((value) => value + 1),
+  };
+}
+
+export function PayoutDetail({
+  payoutId,
+  onBack,
+}: {
+  payoutId: number;
+  onBack: () => void;
+}) {
+  const route = useHashRoute();
+  const context = ledgerContextSuffix(route.params);
+  const detail = usePayoutDetail(payoutId);
+  const view = detail.data;
 
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <button type="button" className="link-button" onClick={onBack}>
-          ← Back
-        </button>
-        <h2>Payout #{payoutId}</h2>
-        {data ? (
-          <StatusBadge tone={payoutStatusTone(data.status)}>
-            {PAYOUT_STATUS_LABEL[data.status]}
-          </StatusBadge>
-        ) : null}
-      </div>
-
-      {loading ? <Loading label="Loading payout…" /> : null}
-      <ErrorBanner error={error} />
-      <ErrorBanner error={actionError} />
-
-      {data ? (
-        <>
-          <dl className="detail-grid">
-            <dt>Farmer</dt>
-            <dd>{data.farmer_name}</dd>
-            <dt>Week</dt>
-            <dd>
-              <DateOnly value={data.week_start} /> → <DateOnly value={data.week_end} />
-            </dd>
-            <dt>Gross</dt>
-            <dd>
-              <Money value={data.gross_amount} />
-            </dd>
-            <dt>Advance deduction</dt>
-            <dd>
-              <Money value={data.advance_deduction} />
-            </dd>
-            <dt>Net payable</dt>
-            <dd>
-              <strong>
-                <Money value={data.net_amount} />
-              </strong>
-            </dd>
-            <dt>Finalised</dt>
-            <dd>
-              <Timestamp value={data.finalised_at} />
-            </dd>
-            <dt>Paid</dt>
-            <dd>
-              <Timestamp value={data.paid_at} />
-            </dd>
-          </dl>
-
-          <h3>Statement lines</h3>
-          {data.deliveries.length === 0 ? (
-            <Empty>No member deliveries.</Empty>
-          ) : (
-            <DataTable label="Statement lines">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Date</th>
-                  <th>Kind</th>
-                  <th className="num">Net kg</th>
-                  <th className="num">Amount</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {data.deliveries.map((delivery) => (
-                  <tr key={delivery.id}>
-                    <td className="num">{delivery.id}</td>
-                    <td>
-                      <DateOnly value={delivery.delivered_on ?? delivery.accounting_date} />
-                    </td>
-                    <td>
-                      <StatusBadge tone={deliveryKindTone(delivery.kind)}>
-                        {DELIVERY_KIND_LABEL[delivery.kind]}
-                      </StatusBadge>
-                    </td>
-                    <td className="num">{delivery.net_kg}</td>
-                    <td className="num">
-                      <Money value={delivery.amount} />
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="link-button"
-                        onClick={() => navigate(`#/deliveries/${delivery.id}`)}
-                      >
-                        View
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </DataTable>
-          )}
-
-          <div className="panel-actions">
-            {data.status === "DRAFT" ? (
-              <Button onClick={() => setConfirming("finalise")} disabled={busy}>
-                Finalise
-              </Button>
-            ) : null}
-            {data.status === "FINALISED" ? (
-              <Button onClick={() => setConfirming("mark-paid")} disabled={busy}>
-                Mark paid
-              </Button>
-            ) : null}
-            {data.status === "PAID" ? (
-              <p className="muted">This payout is settled; later corrections need a supplementary payout.</p>
-            ) : null}
-          </div>
-
-          {confirming === "finalise" ? (
-            <ConfirmDialog
-              title="Finalise this payout?"
-              message={`Finalising statement #${data.id} locks it for ${data.farmer_name}. It can then only be marked paid, and settled corrections need a supplementary payout.`}
-              confirmLabel="Finalise"
-              pending={busy}
-              pendingLabel="Finalising…"
-              onCancel={() => setConfirming(null)}
-              onConfirm={() => act(() => finalisePayout(data.id))}
-            >
-              <ErrorBanner error={actionError} />
-            </ConfirmDialog>
-          ) : null}
-
-          {confirming === "mark-paid" ? (
-            <ConfirmDialog
-              title="Mark this payout paid?"
-              message={`Marking statement #${data.id} paid records the money as handed over to ${data.farmer_name}. This is the final state for the week.`}
-              confirmLabel="Mark paid"
-              pending={busy}
-              pendingLabel="Marking paid…"
-              onCancel={() => setConfirming(null)}
-              onConfirm={() => act(() => markPayoutPaid(data.id))}
-            >
-              <ErrorBanner error={actionError} />
-            </ConfirmDialog>
-          ) : null}
-        </>
+    <>
+      {detail.loading && view ? (
+        <p className="help" role="status" aria-live="polite">
+          Refreshing statement…
+        </p>
       ) : null}
-    </section>
+      {detail.loading && !view ? <Loading label="Loading payout…" /> : null}
+      <ErrorBanner error={detail.error} />
+      {view ? (
+        <PayoutStatement
+          payout={view.payout}
+          statementSet={view.statementSet}
+          outstandingAdvance={view.outstanding}
+          onChanged={detail.reload}
+          onOpenPayout={(id) => navigate(`#/payouts/${id}${context}`)}
+          onOpenDelivery={(id) => navigate(`#/deliveries/${id}${context}`)}
+          onBack={onBack}
+        />
+      ) : null}
+    </>
   );
 }

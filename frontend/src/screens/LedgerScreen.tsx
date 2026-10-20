@@ -2,43 +2,222 @@ import { useMemo, useState } from "react";
 
 import { getLedger } from "../api/endpoints";
 import type { LedgerEvent } from "../api/types";
-import { LEDGER_EVENT_LABEL } from "../util/labels";
-import { navigate } from "../hooks/useHashRoute";
+import {
+  LEDGER_EVENT_LABEL,
+  PAYOUT_STATUS_LABEL,
+  deliveryKindTone,
+  payoutStatusTone,
+} from "../util/labels";
+import {
+  LEDGER_PAGE_SIZE,
+  LEDGER_SCOPE_NOTE,
+  NO_DOUBLE_COUNT_NOTE,
+  RECONCILIATION_HINT,
+  RECOVERY_POLICY_NOTE,
+  earningsIdentityText,
+  isLedgerFiltered,
+  ledgerAmountMeaning,
+  ledgerContextLink,
+  ledgerDeliveryPayoutLabel,
+  ledgerEmptyMessage,
+  ledgerEventTitle,
+  ledgerEventTone,
+  ledgerPayoutStateNote,
+  payoutArithmeticWarnings,
+} from "../util/ledger";
+import { navigate, replaceHash } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
 import { useLookups } from "../hooks/useLookups";
 import { PageHeader } from "../components/AppShell";
+import { Button } from "../components/Button";
 import { DataTable } from "../components/DataTable";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { DateOnly, Money, Timestamp } from "../components/format";
+import { DateOnly, Money, Quantity, Timestamp } from "../components/format";
 import { Field, Select, TextInput } from "../components/form";
 import { Empty, Loading } from "../components/Modal";
 import { Pagination } from "../components/Pagination";
-import { StatusBadge, type BadgeTone } from "../components/StatusBadge";
+import { StatusBadge } from "../components/StatusBadge";
 
-const PAGE_SIZE = 20;
-
-function eventTone(event: LedgerEvent): BadgeTone {
-  if (event.event_type === "ADVANCE") return "warn";
-  if (event.event_type === "PAYOUT") return "paid";
-  if (event.event_type === "CORRECTION") {
-    return event.delivery?.kind === "DEBIT_NOTE" ? "debit" : "credit";
-  }
-  return "procurement";
+function Stat({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+}) {
+  return (
+    <div className="stat">
+      <span className="muted">{label}</span>
+      <strong>
+        <Money value={value} />
+      </strong>
+      {note ? <span className="stat-note">{note}</span> : null}
+    </div>
+  );
 }
 
-function eventDescription(event: LedgerEvent): string {
-  if (event.event_type === "ADVANCE") return `Advance #${event.id}`;
-  if (event.event_type === "PAYOUT") return `Payout #${event.id}`;
-  if (event.event_type === "CORRECTION") {
-    const kind = event.delivery?.kind === "DEBIT_NOTE" ? "Debit note" : "Credit note";
-    return `${kind} #${event.id}`;
+function EventDetail({
+  event,
+  farmerId,
+}: {
+  event: LedgerEvent;
+  farmerId: string;
+}) {
+  const delivery = event.delivery;
+
+  if (event.event_type === "DELIVERY" && delivery) {
+    return (
+      <>
+        <strong>{ledgerEventTitle(event)}</strong>
+        <div className="help">
+          Net <Quantity value={delivery.net_kg} unit="kg" /> at{" "}
+          <Money value={delivery.applied_price} suffix=" / kg" />
+        </div>
+      </>
+    );
   }
-  return `Delivery #${event.id}`;
+
+  if (event.event_type === "CORRECTION" && delivery) {
+    return (
+      <>
+        <strong>{ledgerEventTitle(event)}</strong>
+        <div className="help">{delivery.reason || "No reason recorded."}</div>
+        <div className="help">
+          Magnitude <Money value={delivery.correction_magnitude} />
+          {delivery.original_delivery !== null ? (
+            <>
+              {" "}
+              - original{" "}
+              <button
+                type="button"
+                className="link-button"
+                onClick={() =>
+                  navigate(
+                    ledgerContextLink(
+                      "deliveries",
+                      delivery.original_delivery as number,
+                      farmerId,
+                    ),
+                  )
+                }
+              >
+                #{delivery.original_delivery}
+              </button>
+            </>
+          ) : null}
+        </div>
+      </>
+    );
+  }
+
+  if (event.event_type === "ADVANCE" && event.advance) {
+    return (
+      <>
+        <strong>{ledgerEventTitle(event)}</strong>
+        <div className="help">
+          Recorded <Timestamp value={event.advance.created_at} />
+        </div>
+      </>
+    );
+  }
+
+  if (event.event_type === "PAYOUT" && event.payout) {
+    const payout = event.payout;
+    const warnings = payoutArithmeticWarnings(payout);
+    return (
+      <>
+        <strong>{ledgerEventTitle(event)}</strong>{" "}
+        <StatusBadge tone={payoutStatusTone(payout.status)}>
+          {PAYOUT_STATUS_LABEL[payout.status]}
+        </StatusBadge>
+        <div className="help">
+          Week <DateOnly value={payout.week_start} /> -{" "}
+          <DateOnly value={payout.week_end} />
+        </div>
+        <div className="help">
+          Gross <Money value={payout.gross_amount} />;{" "}
+          {payout.is_draft ? "recovery not yet applied" : "recovery applied"}{" "}
+          <Money value={payout.advance_deduction} />; net{" "}
+          <Money value={payout.net_amount} />
+        </div>
+        <div className="help">{ledgerPayoutStateNote(payout)}</div>
+        {warnings.map((warning) => (
+          <div className="help" key={warning}>
+            Warning: {warning}
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  return <strong>{ledgerEventTitle(event)}</strong>;
 }
 
-export function LedgerScreen() {
+function EventState({
+  event,
+  farmerId,
+}: {
+  event: LedgerEvent;
+  farmerId: string;
+}) {
+  if (event.event_type === "PAYOUT" && event.payout) {
+    const payout = event.payout;
+    return (
+      <>
+        <span>
+          {payout.is_draft
+            ? "Draft projection"
+            : payout.status === "FINALISED"
+              ? "Finalised, awaiting payment"
+              : "Paid and settled"}
+        </span>
+        {payout.finalised_at ? (
+          <div className="help">
+            Finalised <Timestamp value={payout.finalised_at} />
+          </div>
+        ) : null}
+        {payout.paid_at ? (
+          <div className="help">
+            Paid <Timestamp value={payout.paid_at} />
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  if (event.event_type === "ADVANCE") {
+    return <span className="muted">Given to farmer</span>;
+  }
+
+  if (event.delivery) {
+    const payoutId = event.delivery.payout;
+    const label = ledgerDeliveryPayoutLabel(event.delivery);
+    if (payoutId === null) return <span className="muted">{label}</span>;
+    return (
+      <button
+        type="button"
+        className="link-button"
+        onClick={() =>
+          navigate(ledgerContextLink("payouts", payoutId, farmerId))
+        }
+      >
+        {label}
+      </button>
+    );
+  }
+
+  return null;
+}
+
+export function LedgerScreen({
+  initialFarmerId = "",
+}: {
+  initialFarmerId?: string;
+}) {
   const lookups = useLookups();
-  const [farmerId, setFarmerId] = useState("");
+  const [farmerId, setFarmerId] = useState(initialFarmerId);
   const [page, setPage] = useState(1);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -47,7 +226,10 @@ export function LedgerScreen() {
   const farmerOptions = useMemo(() => {
     const farmers = lookups.data ? [...lookups.data.farmers.values()] : [];
     return farmers
-      .map((farmer) => ({ value: String(farmer.id), label: `${farmer.name} · ${farmer.village}` }))
+      .map((farmer) => ({
+        value: String(farmer.id),
+        label: `${farmer.name} - ${farmer.village}`,
+      }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [lookups.data]);
 
@@ -70,17 +252,46 @@ export function LedgerScreen() {
   );
 
   const summary = ledger.data?.summary;
+  const selectedFarmer = farmerId
+    ? lookups.data?.farmers.get(Number(farmerId))
+    : undefined;
+  const hasFilters = isLedgerFiltered(from, to, eventType);
 
-  function resetTo(fn: () => void) {
+  function resetTo(update: () => void) {
     setPage(1);
-    fn();
+    update();
+  }
+
+  function selectFarmer(value: string) {
+    resetTo(() => setFarmerId(value));
+    replaceHash(value ? `#/ledger?farmer=${value}` : "#/ledger");
+  }
+
+  function clearFilters() {
+    resetTo(() => {
+      setFrom("");
+      setTo("");
+      setEventType("");
+    });
   }
 
   return (
     <>
       <PageHeader
         title="Farmer ledger"
-        subtitle="Advances, deliveries, corrections and payouts with the outstanding balance reconciled against them."
+        subtitle="Advances, deliveries, corrections and payouts with the authoritative outstanding balance and reconciliation."
+        actions={
+          farmerId ? (
+            <Button
+              variant="ghost"
+              onClick={ledger.reload}
+              pending={ledger.loading}
+              pendingLabel="Refreshing ledger"
+            >
+              Refresh ledger
+            </Button>
+          ) : undefined
+        }
       />
 
       <section className="panel">
@@ -89,9 +300,10 @@ export function LedgerScreen() {
             <Select
               id="l-farmer"
               value={farmerId}
-              onChange={(value) => resetTo(() => setFarmerId(value))}
-              placeholder="Select a farmer…"
+              onChange={selectFarmer}
+              placeholder="Select a farmer"
               options={farmerOptions}
+              disabled={!lookups.data}
             />
           </Field>
           <Field label="From" htmlFor="l-from">
@@ -127,6 +339,8 @@ export function LedgerScreen() {
         </div>
       </section>
 
+      {lookups.error ? <ErrorBanner error={lookups.error} /> : null}
+
       {farmerId === "" ? (
         <section className="panel">
           <Empty>Select a farmer to view their ledger.</Empty>
@@ -135,6 +349,10 @@ export function LedgerScreen() {
         <>
           <ErrorBanner error={ledger.error} />
 
+          {ledger.loading && !ledger.data ? (
+            <Loading label="Loading ledger" />
+          ) : null}
+
           {summary ? (
             <section className="panel">
               <div className="panel-head">
@@ -142,68 +360,124 @@ export function LedgerScreen() {
                 <StatusBadge tone={summary.is_reconciled ? "ok" : "warn"}>
                   {summary.is_reconciled ? "Reconciled" : "Mismatch"}
                 </StatusBadge>
+                <span className="muted">Farmer #{summary.farmer_id}</span>
               </div>
-              <div className="stat-grid">
-                <div className="stat">
-                  <span className="muted">Outstanding advance</span>
+
+              <dl className="detail-grid">
+                <dt>Phone</dt>
+                <dd>{summary.phone}</dd>
+                <dt>Village</dt>
+                <dd>
+                  {selectedFarmer?.village ?? (
+                    <span className="muted">Not loaded</span>
+                  )}
+                </dd>
+                <dt>Bank reference</dt>
+                <dd>{selectedFarmer?.bank_reference || "Not recorded"}</dd>
+                <dt>Outstanding advance</dt>
+                <dd>
                   <strong>
                     <Money value={summary.outstanding_advance} />
-                  </strong>
-                </div>
-                <div className="stat">
-                  <span className="muted">Settled earnings</span>
-                  <strong>
-                    <Money value={summary.settled_earnings} />
-                  </strong>
-                </div>
-                <div className="stat">
-                  <span className="muted">Total advances</span>
-                  <strong>
-                    <Money value={summary.total_advances} />
-                  </strong>
-                </div>
-                <div className="stat">
-                  <span className="muted">Total recovered</span>
-                  <strong>
-                    <Money value={summary.total_recovered} />
-                  </strong>
-                </div>
-                <div className="stat">
-                  <span className="muted">Draft projection</span>
-                  <strong>
-                    <Money value={summary.draft_projection} />
-                  </strong>
-                </div>
-                <div className="stat">
-                  <span className="muted">Unassigned earnings</span>
-                  <strong>
-                    <Money value={summary.unassigned_earnings} />
-                  </strong>
-                </div>
+                  </strong>{" "}
+                  <span className="muted">stored balance</span>
+                </dd>
+              </dl>
+
+              <div className="stat-grid statement-totals">
+                <Stat label="Total advances" value={summary.total_advances} />
+                <Stat
+                  label="Total recovered"
+                  value={summary.total_recovered}
+                  note="Finalised or paid payouts only"
+                />
+                <Stat
+                  label="Settled earnings"
+                  value={summary.settled_earnings}
+                  note="Finalised or paid payouts"
+                />
+                <Stat
+                  label="Draft projection"
+                  value={summary.draft_projection}
+                  note="Not yet applied"
+                />
+                <Stat
+                  label="Unassigned earnings"
+                  value={summary.unassigned_earnings}
+                  note="Not in a payout yet"
+                />
+                <Stat
+                  label="Total recorded"
+                  value={summary.total_recorded_amount}
+                  note="Every delivery and note, counted once"
+                />
               </div>
-              <p className="muted">
-                Reconciliation difference <Money value={summary.reconciliation.difference} /> ·{" "}
-                {summary.reconciliation.is_reconciled
-                  ? "stored balance matches advances minus recoveries."
-                  : "stored balance does not match the recomputed balance."}{" "}
-                {summary.earnings_identity_holds
-                  ? "Earnings identity holds."
-                  : "Earnings identity does not hold."}
+
+              <p className="help">{LEDGER_SCOPE_NOTE}</p>
+
+              <h3>Advance reconciliation</h3>
+              <dl className="detail-grid">
+                <dt>Expected outstanding</dt>
+                <dd>
+                  <Money value={summary.reconciliation.expected_outstanding} />
+                </dd>
+                <dt>Stored outstanding</dt>
+                <dd>
+                  <Money value={summary.reconciliation.stored_outstanding} />
+                </dd>
+                <dt>Difference</dt>
+                <dd>
+                  <Money value={summary.reconciliation.difference} />
+                </dd>
+              </dl>
+              <p className="help">{RECONCILIATION_HINT}</p>
+
+              <p className="help">{NO_DOUBLE_COUNT_NOTE}</p>
+              <p className="help">{RECOVERY_POLICY_NOTE}</p>
+              <p className="help">
+                <strong>Earnings identity:</strong>{" "}
+                {earningsIdentityText(summary)}{" "}
+                <StatusBadge tone={summary.earnings_identity_holds ? "ok" : "warn"}>
+                  {summary.earnings_identity_holds
+                    ? "Holds"
+                    : "Does not hold"}
+                </StatusBadge>
               </p>
-              {summary.history_from || summary.history_to ? (
-                <p className="muted">
-                  History window {summary.history_from ?? "—"} → {summary.history_to ?? "—"}.
-                </p>
-              ) : null}
             </section>
           ) : null}
 
           <section className="panel">
-            <h2>Timeline</h2>
-            {ledger.loading ? <Loading /> : null}
-            {ledger.data && ledger.data.results.length === 0 ? (
-              <Empty>No events in this window.</Empty>
+            <div className="panel-head">
+              <h2>Timeline</h2>
+              {ledger.data ? (
+                <span className="muted">
+                  {ledger.data.count} event
+                  {ledger.data.count === 1 ? "" : "s"}
+                </span>
+              ) : null}
+            </div>
+            <p className="help">
+              Events are newest first and bounded to {LEDGER_PAGE_SIZE} per page.
+              The account summary above always covers the full history, so a page
+              never changes the balance.
+            </p>
+            {summary?.history_from || summary?.history_to ? (
+              <p className="help">
+                Showing events from {summary.history_from ?? "the beginning"} to{" "}
+                {summary.history_to ?? "now"}.
+              </p>
             ) : null}
+
+            {ledger.data && ledger.data.results.length === 0 ? (
+              <>
+                <Empty>{ledgerEmptyMessage(hasFilters)}</Empty>
+                {hasFilters ? (
+                  <Button variant="ghost" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
+
             {ledger.data && ledger.data.results.length > 0 ? (
               <DataTable label="Ledger timeline">
                 <thead>
@@ -212,7 +486,7 @@ export function LedgerScreen() {
                     <th>Event</th>
                     <th>Detail</th>
                     <th className="num">Amount</th>
-                    <th>Recorded</th>
+                    <th>State</th>
                     <th />
                   </tr>
                 </thead>
@@ -223,33 +497,64 @@ export function LedgerScreen() {
                         <DateOnly value={event.date} />
                       </td>
                       <td>
-                        <StatusBadge tone={eventTone(event)}>
+                        <StatusBadge tone={ledgerEventTone(event)}>
                           {LEDGER_EVENT_LABEL[event.event_type]}
                         </StatusBadge>
+                        {event.delivery &&
+                        event.delivery.kind !== "PROCUREMENT" ? (
+                          <>
+                            <br />
+                            <StatusBadge
+                              tone={deliveryKindTone(event.delivery.kind)}
+                            >
+                              {event.delivery.kind === "DEBIT_NOTE"
+                                ? "Debit note"
+                                : "Credit note"}
+                            </StatusBadge>
+                          </>
+                        ) : null}
                       </td>
-                      <td>{eventDescription(event)}</td>
+                      <td>
+                        <EventDetail event={event} farmerId={farmerId} />
+                      </td>
                       <td className="num">
                         <Money value={event.amount} />
+                        <div className="help">
+                          {ledgerAmountMeaning(event)}
+                        </div>
                       </td>
                       <td>
-                        <Timestamp value={event.advance?.created_at ?? null} />
+                        <EventState event={event} farmerId={farmerId} />
                       </td>
                       <td>
-                        {event.event_type === "DELIVERY" || event.event_type === "CORRECTION" ? (
+                        {event.event_type === "DELIVERY" ||
+                        event.event_type === "CORRECTION" ? (
                           <button
                             type="button"
                             className="link-button"
-                            onClick={() => navigate(`#/deliveries/${event.id}`)}
+                            onClick={() =>
+                              navigate(
+                                ledgerContextLink(
+                                  "deliveries",
+                                  event.id,
+                                  farmerId,
+                                ),
+                              )
+                            }
                           >
-                            View
+                            Open delivery
                           </button>
                         ) : event.event_type === "PAYOUT" ? (
                           <button
                             type="button"
                             className="link-button"
-                            onClick={() => navigate(`#/payouts/${event.id}`)}
+                            onClick={() =>
+                              navigate(
+                                ledgerContextLink("payouts", event.id, farmerId),
+                              )
+                            }
                           >
-                            View
+                            Open payout
                           </button>
                         ) : null}
                       </td>
@@ -258,11 +563,12 @@ export function LedgerScreen() {
                 </tbody>
               </DataTable>
             ) : null}
+
             {ledger.data ? (
               <Pagination
                 count={ledger.data.count}
                 page={page}
-                pageSize={PAGE_SIZE}
+                pageSize={LEDGER_PAGE_SIZE}
                 onPage={setPage}
               />
             ) : null}

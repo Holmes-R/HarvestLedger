@@ -3,8 +3,9 @@ import { useState, type ReactNode } from "react";
 import { getDelivery, getPayout } from "../api/endpoints";
 import { farmerLabel, gradeLabel } from "../api/lookups";
 import { deliveryLockReason } from "../util/delivery";
+import { ledgerContextSuffix } from "../util/ledger";
 import { DELIVERY_KIND_LABEL, deliveryKindTone } from "../util/labels";
-import { navigate } from "../hooks/useHashRoute";
+import { navigate, useHashRoute } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
 import { useLookups } from "../hooks/useLookups";
 import { Button } from "./Button";
@@ -29,6 +30,8 @@ function Row({ label, value }: { label: string; value: ReactNode }) {
  * delivery list, payout statements and ledger entries (all offer `#/deliveries/{id}`).
  */
 export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onBack: () => void }) {
+  const route = useHashRoute();
+  const context = ledgerContextSuffix(route.params);
   const lookups = useLookups();
   const { data, error, loading, reload } = useAsync(
     (signal) => getDelivery(deliveryId, { signal }),
@@ -93,7 +96,7 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
                       <button
                         type="button"
                         className="link-button"
-                        onClick={() => navigate(`#/deliveries/${delivery.original_delivery}`)}
+                        onClick={() => navigate(`#/deliveries/${delivery.original_delivery}${context}`)}
                       >
                         #{delivery.original_delivery}
                       </button>
@@ -145,7 +148,7 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
                   <button
                     type="button"
                     className="link-button"
-                    onClick={() => navigate(`#/payouts/${delivery.payout}`)}
+                    onClick={() => navigate(`#/payouts/${delivery.payout}${context}`)}
                   >
                     #{delivery.payout}
                   </button>

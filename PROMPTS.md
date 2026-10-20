@@ -791,3 +791,216 @@ Documentation: README §3 (test stack), §7a ("Delivery screen" plus decisions 6
 and 8), §11; `PROMPTS.md` Entry 17.
 
 
+## Entry 18 — Price-history screen against the real API
+
+> Implement the price-history screen against the real API: crop/grade selection,
+> effective-dated history with pagination and stable ordering, an add-price form
+> that accepts back-dated, current and future effective dates, exact decimal
+> rates, and no edit/delete because history is append-only. Explain that
+> existing deliveries keep their saved price/breakdown; handle duplicate
+> effective-date conflicts, missing/invalid fields, excess precision, empty
+> history and loading/network errors; refresh after a successful add while
+> preserving filter context. Add focused tests.
+
+Produced (`frontend/`):
+
+- `src/util/pricing.ts` — pure helpers: `validatePriceEntry` (crop/grade/date
+  required, 2-dp positive rate via the string validator), `classifyEffectiveDate`
+  + `effectiveDateNote` (back-dated/current/future), `priceConflict`
+  (`409 price_already_exists` → date field, `422 grade_not_allowed` → grade
+  field, otherwise `null`), `cropOptionsFromGrades`/`gradeOptionsFromGrades`, and
+  `PRICE_ORDERING = "-effective_from"`.
+- `src/components/PriceEntryForm.tsx` — append-only add form: crop/grade/rate/
+  effective-from, posts exactly `{crop, grade, price_per_kg, effective_from}`,
+  keeps crop/grade/date after success (clears only the rate), field-level errors
+  for duplicate date and unallowed grade, pending/disabled submit, and no
+  edit/delete control.
+- `src/screens/PricesScreen.tsx` — loads every grade page via `loadGradeMap`,
+  lists prices with `crop`/`crop_grade` filters and `ordering=-effective_from`,
+  resets to page 1 on filter change, clears a stale grade, explains append-only
+  history and price-at-recording-time, shows empty/loading/`ErrorBanner` states,
+  and refetches after a save without dropping the active filter.
+- `src/App.css` — small spacing additions for the banner, help text and form.
+- Tests — `src/util/pricing.test.ts`, `src/components/PriceEntryForm.test.tsx`,
+  `src/screens/PricesScreen.test.tsx`.
+
+Decisions/assumptions:
+
+1. **Append-only is reflected in the UI.** No edit or delete control is rendered:
+   the API exposes neither, and a wrong price is corrected by appending an entry
+   with a different effective date. The screen says so rather than implying the
+   history can be mutated.
+2. **Explain price-at-recording-time.** A price change never re-prices existing
+   deliveries; the delivery stores its resolved price and breakdown, so the
+   screen tells the user that earlier deliveries keep the saved figures.
+3. **Validate locally, let the server own uniqueness.** The rate is checked for
+   scale/positivity before submit; duplicate dates and grade/crop mismatches are
+   mapped from the API's `409`/`422` onto the date/grade fields, with the inputs
+   preserved so the user can adjust rather than re-enter.
+4. **Stable, explicit ordering.** The list always sends
+   `ordering=-effective_from`; the API's id tie-breaker makes equal dates
+   deterministic across pages.
+5. **Preserve context after a save.** The history refreshes (page 1) while
+   keeping the current crop/grade filters; the success notice offers a shortcut
+   to reveal the new entry, clearing filters only if it would otherwise be
+   hidden.
+
+Verification (from `frontend/`): `npm test` → **131 passed** (20 files);
+`npm run lint` clean; `npm run build` (`tsc -b && vite build`) green (53
+modules, ~285 kB JS / ~9.1 kB CSS). Live smoke against the real API:
+`POST /price-lists/` with an existing `(grade 1, 2026-04-01)` → `409
+price_already_exists`; a new future entry `2026-12-31` → `201` (id 11), then
+deleted via `manage.py shell` (grade 1 back to 3 entries).
+
+Documentation: README §7a ("Price history screen" plus decision 9), §11;
+`PROMPTS.md` Entry 18.
+
+## Entry 19 — Weekly payout selection and statements against the real API
+
+> Implement weekly payout selection and statements: choose a farmer and a
+> business week, show the Monday–Sunday bounds from the API's normalisation
+> contract, generate/refresh a Draft through the API, and display the included
+> deliveries and signed correction notes with links to the original delivery
+> details and stored breakdowns. Show gross, the estimated Draft
+> recovery/net (not yet applied), the finalised recovery/net and the
+> status/timestamps; keep every financial field read-only and explain that a
+> Draft has not reduced the outstanding advance. Confirm before finalisation and
+> show the saved Final statement plus refreshed balance data; allow Mark Paid
+> only for a Finalised statement. Never recover advances in frontend code. Handle
+> duplicate clicks, conflicting/stale state, failed finalisation without losing
+> context, ambiguous network results (re-fetch before retrying), supplementary
+> payouts, and zero/negative statements. Add focused tests.
+
+Produced (`frontend/`):
+
+- `src/util/payout.ts` — pure helpers: `DRAFT_ADVANCE_NOTE`, `isNonPositiveMoney`
+  (string-only), `payoutActions` (Draft → finalise, Finalised → mark paid, Paid →
+  read-only), `sameWeekStatements` + `isSupplementary`, `classifyGeneration`
+  (`payout` vs `NO_ELIGIBLE_DELIVERIES`), `generateEmptyMessage`,
+  `isPayoutStateConflict`, `finaliseConfirmation`/`markPaidConfirmation` and
+  `nonPositiveNote`.
+- `src/components/PayoutGenerateForm.tsx` — farmer + "any day" picker; previews
+  the normalised Monday–Sunday week, posts the chosen date as `week_start`, shows
+  the empty-week success without inventing a payout, maps a settled-week `409`
+  to an explanation plus `onChanged`, re-checks the week after an ambiguous
+  network result (never auto-retries), and blocks a second in-flight submit.
+- `src/components/PayoutStatement.tsx` — read-only statement: stored totals,
+  Draft labels ("Estimated draft recovery", "Not yet applied", "Estimated draft
+  net"), finalised/paid totals ("Advance recovered", "Net payable"), statement
+  lines with stored breakdowns and original-delivery links, supplementary banner,
+  confirmation summary (farmer/week/gross/draft net/outstanding + server policy),
+  Finalise/Mark paid with double-click guards, ambiguous-write reconciliation via
+  `GET /payouts/{id}/`, stale `409` handling, and a read-only Paid state.
+- `src/screens/PayoutsScreen.tsx` — list with farmer/status filters, newest-week
+  ordering and pagination; a local `usePayoutDetail` hook loads the statement,
+  same-week siblings and `GET /farmers/{id}/` together, keeps the last settled
+  view mounted during a reload, and starts clean on a new statement id.
+- `src/App.css` — `.statement-totals`, `.stat-note`, `.confirm-summary` and
+  `.week-preview`.
+- `vitest.config.ts` — `testTimeout: 30000` (the expanded 23-file jsdom suite
+  exceeded the 5 s default under parallel workers).
+- Tests — `src/util/payout.test.ts`, `src/components/PayoutGenerateForm.test.tsx`,
+  `src/components/PayoutStatement.test.tsx`.
+
+Decisions/assumptions:
+
+1. **The server owns the week and the money.** The form previews
+   `mondayOf`/`sundayOf` but sends the picked day; the API normalises it. All
+   totals come from the response, and the UI never computes advance recovery.
+2. **Draft totals are shown as stored, labelled as estimates.** The API stores
+   Draft `advance_deduction = 0.00` and `net_amount = gross_amount`; the screen
+   says recovery is not yet applied instead of predicting `min(outstanding, 30%)`.
+3. **No optimistic transitions.** Finalise/Mark paid render the server's returned
+   statement immediately, then re-fetch it with the farmer's balance. A network
+   failure triggers a read before any retry; nothing is resent automatically.
+4. **Conflicts preserve context.** A `409 payout_state_error` closes the
+   confirmation, shows the server message and refreshes the statement/list rather
+   than leaving a stale dialog. Failed finalisation keeps the statement and
+   dialog so the user can decide.
+5. **Supplementary statements stay visible.** The detail load also lists the
+   same farmer/week, so a later Draft is labelled "Supplementary payout" and the
+   earlier statement is linked.
+6. **Settled statements are read-only.** Paid statements render a "Settled —
+   read-only" note and no action; corrections are linked, never edited.
+
+Verification (from `frontend/`): `npm test` → **154 passed** (23 files);
+`npm run lint` clean; `npm run build` (`tsc -b && vite build`) green (56
+modules, ~296 kB JS / ~9.4 kB CSS). Live smoke against the real API:
+`GET /payouts/` → `200` with `count: 0`; `POST /payouts/generate/`
+(`farmer: 1`, `week_start: 2026-10-14`) → `200
+{"payout":null,"reason":"NO_ELIGIBLE_DELIVERIES"}` (no data created; port 8000
+released).
+
+Documentation: README §7a ("Weekly payouts screen" plus decisions 10–11), §11;
+`PROMPTS.md` Entry 19.
+
+## Entry 20 — Farmer ledger screen against the real API
+
+> Implement the farmer-ledger screen against the real ledger API: farmer
+> details, authoritative outstanding advance and reconciliation values, the
+> advance/delivery/correction/payout history with payout and payment states,
+> inclusive date/type filters and bounded pagination. Link to payout statements
+> and original deliveries without losing farmer context, never derive an
+> all-time balance from one page, never double count a delivery and its payout,
+> and clearly separate Draft projections from finalised recoveries. Add focused
+> tests for pagination, filtering, empty history, errors, signed corrections and
+> the displayed balance after financial actions.
+
+Produced (`frontend/`):
+
+- `src/util/ledger.ts` — pure copy/formatting helpers: ledger tones, event
+  titles and amount meanings, Draft versus settled recovery notes, delivery
+  assignment labels, payout arithmetic warnings, the no-double-counting and
+  once-only recovery copy, the earnings identity string, empty-window copy,
+  `LEDGER_PAGE_SIZE`, and context link/back helpers.
+- `src/screens/LedgerScreen.tsx` — rewritten read-only ledger: farmer selector
+  with deep-linkable `?farmer=`, farmer name/phone/village/bank plus the stored
+  outstanding advance, full-account totals and reconciliation, history window,
+  inclusive `from`/`to` and event-type filters (each resets to page 1), bounded
+  20-row pagination, signed correction rows, payout status/timestamps, links to
+  deliveries/payouts with `from=ledger&farmer=<id>`, a Refresh action and
+  distinct empty/error states.
+- `src/hooks/useHashRoute.ts` — parses an optional query string into
+  `route.params`; adds `replaceHash` for context-only URL updates that notify the
+  router without adding a history entry.
+- `src/App.tsx` — passes the deep-linked farmer to the ledger, returns from a
+  delivery/payout detail to that farmer's ledger when the context is present, and
+  keeps direct links unchanged.
+- `src/components/DeliveryDetail.tsx` — preserves the ledger context on its
+  original-delivery and payout links.
+- `src/screens/PayoutsScreen.tsx` — preserves the context from a payout
+  statement to its member deliveries and supplementary statements.
+- Tests — `src/util/ledger.test.ts`, `src/screens/LedgerScreen.test.tsx`.
+
+Decisions/assumptions:
+
+1. **The API summary is the balance.** `outstanding_advance`, all totals and the
+   reconciliation are rendered from the ledger response's full-history summary.
+   The event table is only a bounded/filterable window, and the screen states
+   that paging cannot change the balance.
+2. **Draft money is not settled money.** Draft payouts stay in
+   `draft_projection`, are labelled as projections and never reduce the
+   outstanding advance in the UI; no `min(outstanding, 30%)` recovery is
+   calculated in the browser.
+3. **No double counting is explained, not recomputed.** The screen renders the
+   API's settled/draft/unassigned/recorded values and identity flag, and explains
+   that a payout's members are not added again and that recovery happens once at
+   finalisation.
+4. **Context travels in the hash.** Detail links carry
+   `?from=ledger&farmer=<id>`; Back returns to the same farmer's ledger and the
+   delivery detail keeps the context on further links. Direct links without the
+   context behave as before.
+5. **Refresh, not optimistic mutation.** The ledger is read-only, so after a
+   finalise/mark-paid elsewhere the user refreshes to re-read the authoritative
+   summary and timeline.
+
+Verification (from `frontend/`): `npm test` → **169 passed** (25 files);
+`npm run lint` clean; `npm run build` (`tsc -b && vite build`) green (57
+modules, ~304 kB JS / ~9.4 kB CSS). Live smoke against the real API:
+`GET /farmers/1/ledger/` → `200` (count 0; farmer Aarti Bhosale; outstanding
+`0.00`; reconciled true; stored/expected/difference `0.00`; identity holds);
+`GET /farmers/1/advance-reconciliation/` → `200` (all totals `0.00`,
+reconciled true). No data created; port 8000 released.
+
+Documentation: README §7a ("Farmer ledger screen" plus decisions 12–15), §11;
+`PROMPTS.md` Entry 20.

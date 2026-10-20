@@ -453,7 +453,7 @@ dependency — with four sections and deep links:
 |---|---|
 | `#/deliveries` | Delivery entry: validated capture form, debounced preview, authoritative stored result, recent-deliveries list |
 | `#/deliveries/{id}` | Reusable delivery detail (frozen breakdown, payout link, edit when permitted, "Add correction") |
-| `#/prices` | Price history: effective-dated entries with crop/grade filters |
+| `#/prices` | Price history: filtered, paginated effective-dated entries (newest first) plus an append-only add form |
 | `#/payouts` | Weekly payouts: generate a draft + statement list |
 | `#/payouts/{id}` | Payout statement: member deliveries, `Finalise` / `Mark paid` |
 | `#/ledger` | Farmer ledger: account summary + typed event timeline with `from`/`to`/`event_type` filters |
@@ -580,6 +580,124 @@ save-failure/duplicate-submit/stored-comparison paths
 edit (`src/components/DeliveryEditForm.test.tsx`); and full-page lookups
 (`src/api/lookups.test.ts`).
 
+**Price history screen.** Prices are effective-dated and append-only:
+
+- The history shows crop, grade, the exact rate (decimal string, Indian
+  grouping) and effective date, ordered by `-effective_from` with the id as a
+  stable tie-breaker, through the shared pagination control (20 per page). It is
+  filterable by crop (`?crop=`) and grade (`?crop_grade=`); changing a filter
+  resets to page 1 and clears a grade that no longer belongs to the selected
+  crop.
+- The add form sends exactly `{crop, grade, price_per_kg, effective_from}`.
+  Crop/grade options come from every grade page (`loadGradeMap`); the rate
+  allows at most two decimals and is posted as the entered string. Back-dated,
+  current and future effective dates are all allowed, and a polite live note
+  explains which deliveries the date will price.
+- There are **no edit or delete controls**. A mistake is corrected by appending
+  another entry with a different effective date; the screen states that
+  existing deliveries keep the price and breakdown saved when they were
+  recorded (the price is resolved and stored at recording time).
+- A duplicate `(grade, effective date)` returns `409 price_already_exists` and
+  an unallowed grade returns `422 grade_not_allowed`. Both are shown on the
+  offending field (date/grade) with a short "Not added" banner and the inputs
+  preserved, so a double submit cannot silently rewrite history.
+- After a successful add the form keeps crop/grade/date (clearing only the
+  rate), the history refetches while preserving the active filter, and the saved
+  entry is announced with a "Show this entry in history" shortcut (which clears
+  filters if needed).
+
+Focused tests cover validation/timing/conflict mapping
+(`src/util/pricing.test.ts`), the form's invalid/excess-precision/four-field
+POST/conflict paths and duplicate-submit guard
+(`src/components/PriceEntryForm.test.tsx`), and the screen's history ordering,
+filters, absence of mutation controls, post-save refresh and error/empty states
+(`src/screens/PricesScreen.test.tsx`).
+
+**Weekly payouts screen.** Payouts are generated per farmer and Monday–Sunday
+week, and every financial figure is read-only:
+
+- `#/payouts` lists statements newest week first (`ordering=-week_start`), with
+  farmer/status filters and the shared pagination. The generate form asks for a
+  farmer and **any day** in the week, previews the normalised Monday–Sunday
+  bounds, and sends the chosen day as `week_start`; the server owns the
+  normalisation (the client never rewrites the date itself).
+- The documented envelope is handled literally: `201` opens the statement; `200`
+  with `NO_ELIGIBLE_DELIVERIES` explains that nothing was generated and no
+  balance changed; regenerating reuses the existing Draft; a settled week is
+  reported as `409 payout_state_error` (a supplementary Draft needs a new
+  unassigned record) and refreshes the statements.
+- A statement shows the farmer, week, status/timestamps and the stored lines
+  (deliveries and signed correction notes, with the stored breakdown, net kg and
+  amount). Every line links to `#/deliveries/{id}`; a note also links back to its
+  original delivery. No financial input is rendered.
+- **Draft figures are labelled as stored.** The API stores a Draft with
+  `advance_deduction = 0.00` and `net_amount = gross_amount`; the UI labels these
+  "Estimated draft recovery — not yet applied" / "Estimated draft net" and says
+  the advance is recovered once at finalisation. **No recovery is calculated in
+  the browser** (the `min(outstanding, 30%)` rule stays server-side).
+- Finalisation and settlement are guarded by a confirmation that restates the
+  farmer, week, gross, draft net, current outstanding balance and the server's
+  recovery policy. `Finalise` is offered only for a Draft and `Mark paid` only
+  for a Finalised statement; a PAID statement is read-only. Neither action sends
+  a body.
+- Ambiguous network/`5xx` writes are never resent: the statement is re-fetched
+  and the result reported (applied → show it and refresh; not applied → keep the
+  dialog open with the prior status). A `409 payout_state_error` closes the
+  dialog, shows the server message and refreshes the statement/list. The
+  statement stays mounted while a refresh is in flight, so context is not lost.
+- The balance shown with the statement is fetched from `GET /farmers/{id}/` in
+  the same load (`PayoutDetail`), so finalisation refreshes the statement and
+  balance together; navigating to another statement never shows the previous
+  one's figures.
+
+Focused tests cover action gating/supplementary detection/confirmation copy/
+generation outcomes/non-positive policy (`src/util/payout.test.ts`), the
+generate form's week preview/payload/empty week/double-submit/conflict/
+unknown-outcome re-check (`src/components/PayoutGenerateForm.test.tsx`), and the
+statement's Draft projection, finalise/mark-paid transitions, stale/ambiguous
+outcomes, paid read-only state, supplementary link and stored breakdowns
+(`src/components/PayoutStatement.test.tsx`).
+
+**Farmer ledger screen.** The ledger is a read-only account view over
+`GET /farmers/{id}/ledger/`:
+
+- Select a farmer (or deep-link `#/ledger?farmer=3`). The header shows the name,
+  stored phone, village and bank reference from the cached farmer lookup, and the
+  **authoritative stored outstanding advance** rather than a balance accumulated
+  from the visible rows.
+- The account summary is independent of paging and filters: total advances,
+  total recovered (finalised/paid payouts only), settled earnings, Draft
+  projection, unassigned earnings and total recorded amount. It also shows the
+  advance reconciliation (expected, stored, difference) and whether the earnings
+  identity holds. Copy explains that a payout is not extra income (its member
+  deliveries are not added again), that Draft payouts are projections, and that
+  an advance is recovered once at finalisation — marking paid does not recover
+  it again.
+- The event timeline merges advances, deliveries, credit/debit notes and
+  payouts, newest first, with inclusive `from`/`to` date filters and an
+  event-type filter. Any filter resets to page 1. It is bounded to 20 events per
+  page and shows the server's filtered count; a page or window never changes the
+  summary.
+- Delivery/correction rows show the stored breakdown, assignment (`In payout
+  #id` or `Not in a payout yet`), signed correction amounts (a debit note is
+  negative), and links to the delivery and, for a note, its original delivery.
+  Payout rows show the week, status (`Draft`/`Finalised`/`Paid`), gross, the
+  recovery actually applied (or "not yet applied" for a Draft) and net.
+  Delivery/payout links carry `?from=ledger&farmer=<id>`; Back and the
+  original-delivery link keep that farmer context, and **Refresh ledger**
+  re-reads the authoritative balance after a financial action elsewhere.
+- Empty history and an empty filtered window have different copy. API errors
+  (including `farmer_not_found` and invalid date bounds) are announced in the
+  shared error banner; a failed load never invents a summary.
+
+Focused tests cover event tones/titles/amount meanings, Draft versus settled
+recovery copy, reconciliation/identity copy and context links
+(`src/util/ledger.test.ts`), plus the screen's authoritative summary (not a
+page-derived balance), date/type filters with page reset, bounded pagination,
+empty history/window, API errors, signed corrections, payout/payment states,
+farmer-preserving links and a balance refresh after financial actions
+(`src/screens/LedgerScreen.test.tsx`).
+
 **Decisions and assumptions.**
 
 1. **No new runtime dependencies.** React 19 + `react-dom` only; navigation,
@@ -608,6 +726,35 @@ edit (`src/components/DeliveryEditForm.test.tsx`); and full-page lookups
    `npm test` covers helpers, the API client, hooks and components; `npm run
    build` fails on any `tsc -b` type error (`verbatimModuleSyntax`,
    `erasableSyntaxOnly`, `noUnusedLocals`) and `npm run lint` is clean.
+9. **Price history is append-only in the UI too.** No edit/delete affordance is
+   rendered because the API exposes none; a correction is a new entry, and the
+   screen explains that deliveries already recorded retain their stored price
+   rather than being re-priced.
+10. **The browser does not estimate advance recovery.** A Draft's stored
+    recovery/net are displayed with an explicit "not yet applied" label rather
+    than computing `min(outstanding, 30% of gross)` client-side. The server
+    applies recovery once at finalisation; the confirmation states that policy
+    instead of predicting a number.
+11. **A statement refresh is paired with the farmer balance.** `PayoutDetail`
+    loads `GET /payouts/{id}/`, the same-week statements and `GET /farmers/{id}/`
+    together and keeps the last settled view mounted while reloading. A new
+    statement id starts clean, so another week's figures never linger.
+12. **Balances come from the ledger summary, never from the current page.**
+    `outstanding_advance`, the totals and the reconciliation are the server's
+    full-history values. The timeline is only a bounded, filterable window and
+    the screen says so, so paging cannot create a second, page-derived balance.
+13. **Draft and settled money stay distinct.** Draft payouts are labelled as
+    projections and excluded from settled earnings/recovery; no recovery is
+    calculated in the browser. Payout rows state whether recovery was applied
+    and that marking paid does not recover it again.
+14. **Links keep the farmer context.** Delivery and payout links from the ledger
+    carry `?from=ledger&farmer=<id>`; `useHashRoute` parses the query, Back
+    returns to that ledger, and the delivery detail preserves the context on its
+    original-delivery and payout links.
+15. **Refresh re-reads; it never mutates optimistically.** The ledger is
+    read-only. After finalising or marking a payout paid elsewhere, **Refresh
+    ledger** re-fetches the summary and timeline from the API rather than
+    adjusting a local balance.
 
 ## 8. Business rules and assumptions
 
@@ -809,7 +956,7 @@ is not available.
 
 **M1 schema, M2 services, the M3 HTTP API and the M4 procurement UI are
 implemented** (527 backend tests passing; see [COVERAGE.md](COVERAGE.md)). The
-frontend is verified by `npm test` (107 Vitest tests), `npm run lint`,
+frontend is verified by `npm test` (169 Vitest tests), `npm run lint`,
 `npm run build` and a live-API smoke run.
 
 1. The **API is unauthenticated** by design (every route is `AllowAny`; no user
