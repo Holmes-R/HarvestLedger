@@ -6,27 +6,22 @@ A buying-centre application for recording produce deliveries, applying
 effective-dated prices and moisture deductions, and generating weekly
 farmer payouts with advance recovery.
 
-## 1. Title and one-liner
+## 1. Project status
 
-- **HarvestLedger** — KJBN Labs internship, Problem 4 (Produce Procurement & Payout).
-- A buying-centre application that records produce deliveries, applies
-  effective-dated prices and moisture deductions, and generates weekly farmer
-  payouts with advance recovery.
+HarvestLedger implements the M1 schema, M2 procurement services, M3 HTTP API,
+and M4 React UI. M5 adds Render, Docker Compose, and CI configuration. The four
+core UI screens cover delivery entry, price history, weekly payouts, and the
+farmer ledger; supporting forms handle farmers, crop configuration, advances,
+and corrections. See [section 7a](#7a-frontend-m4-ui).
 
-**Current milestone: M5 deployment preparation.** M1 schema, M2 services and the M3
-HTTP API are implemented. The React/TypeScript frontend is a
-working UI over the real API: delivery entry with a live preview, price history,
-weekly payouts and the farmer ledger, plus farmer/crop/advance/correction forms.
-See [section 7a](#7a-frontend-m4-ui).
+## 2. Hosted links
 
-## 2. Live links
-
-- Frontend: <URL>
-- Backend API: <URL>
-- API documentation: <URL>
-- Health endpoint: <URL>
-- Test credentials, if authentication is implemented.
-- Expected cold-start delay, if applicable.
+No successful public deployment has been verified or recorded here. After a
+successful Render deployment, record the actual frontend URL, backend API URL,
+`/api/docs/` URL, and `/health/` URL. The backend API is intentionally anonymous
+for fictional demo data, so there are no test credentials. Render Free may have
+a cold start after inactivity; see
+[deployment setup](#5a-deployment-preparation-render--neon).
 
 ## 3. Tech stack
 
@@ -38,25 +33,48 @@ See [section 7a](#7a-frontend-m4-ui).
 | Tests | pytest, pytest-django and pytest-cov (backend); Vitest + Testing Library (frontend helpers, API client, hooks and components) |
 | Local environment | PostgreSQL service or Docker Compose |
 | CI | GitHub Actions |
-| Hosting | Render Free Web Service and Static Site (configuration prepared, not deployed) |
+| Hosting | Render Free Web Service and Static Site (configuration committed; successful deployment unverified) |
 
-Explain any important technology choices briefly.
+PostgreSQL constraints and row locks protect financial membership and balances.
+The service layer owns pricing, moisture arithmetic, advances, and payout
+transitions; DRF adapts those rules to HTTP. Decimal strings cross the API so
+the browser does not recalculate money with binary floats. Vite builds a static
+frontend that calls the Django API on its configured origin.
 
 ## 4. Architecture
 
-Include:
-- A component and request-flow diagram.
-- A short folder overview.
-- Where business rules live and why.
-- How delivery snapshots and payout transactions work.
+```mermaid
+flowchart LR
+    UI[React screens] --> Client[Typed API client]
+    Client --> API[DRF views and serializers]
+    API --> Services[Procurement services]
+    Services --> ORM[Django models]
+    ORM --> DB[(PostgreSQL)]
+```
 
-Request flow:
-Frontend → API → Services → Django ORM → PostgreSQL
+| Directory | Responsibility |
+|---|---|
+| `frontend/src/screens`, `components`, `hooks` | Four core screens, supporting forms, and preview state |
+| `frontend/src/api` | Typed requests, decimal-string and error-envelope handling |
+| `backend/config` | Django settings, URL routing, WSGI |
+| `backend/procurement/api` | DRF serializers, views, pagination, permissions, logging |
+| `backend/procurement/services` | Financial validation, calculations, locking, and state transitions |
+| `backend/procurement/models.py`, `migrations` | Stored records and database constraints |
+| `backend/tests`, `frontend/src/**/*.test.*` | Backend and frontend regression tests |
+| `render.yaml`, `compose.yaml`, `.github/workflows` | Hosting, local containers, and CI |
+
+A saved delivery stores the selected price reference, applied rate, moisture
+threshold, deduction, net weight, and rounded amount. Later price or crop
+changes do not recalculate that snapshot. A Draft payout groups eligible
+delivery and correction amounts without recovering an advance. Finalisation
+freezes membership and totals and applies recovery once; marking Paid does not
+recover again. A correction is a new signed record linked to an unchanged
+original delivery. See [business rules](#8-business-rules-and-assumptions).
 
 ## 5. Running locally
 
-Prerequisites: Python 3.12, PostgreSQL 17 and Node.js 22.13+. Install the pinned
-backend dependencies from `backend/requirements.txt` (UTF-8).
+Prerequisites: Python 3.12.14, PostgreSQL 17 and Node.js 22.13+. Install the
+pinned backend dependencies from `backend/requirements.txt` (UTF-8).
 
 Backend (from the repository root):
 
@@ -92,7 +110,7 @@ database for tests. From `backend/`, run:
 ```bash
 python manage.py check
 python manage.py migrate
-python manage.py seed_data
+python manage.py seed_data       # adds fictional financial demo records on first run
 python -m pytest --reuse-db
 python manage.py runserver
 ```
@@ -118,7 +136,7 @@ Only the public API base URL belongs in `VITE_*`; database credentials and the
 review key must never be exposed to the build. From `frontend/`:
 
 ```bash
-npm install
+npm ci           # install the committed package-lock.json exactly
 npm run dev      # Vite dev server (default http://localhost:5173)
 npm run lint     # ESLint (flat config, typescript-eslint)
 npm run test     # Vitest unit tests (API client, helpers, shared components)
@@ -149,6 +167,8 @@ migrations change the shared Neon database before the new code is live. Keep
 every migration backward compatible with the still-running release.** A failed
 build can therefore leave a migrated database with old application code.
 Never run `makemigrations` in deployment.
+The build checks for required settings before package installation and reports
+the missing variable name without printing its value.
 
 The seed creates fictional reference **and financial** demo records through
 the services. It is idempotent and does not reset existing balances, reprice
@@ -199,38 +219,43 @@ must show Python 3.12 before migrations or seeding are attempted.
 ### Local Docker Compose
 
 Copy the root `.env.example` to ignored `.env`, replace its local-only password
-and Django key, then run `docker compose -f compose.yaml up --build`. Compose exposes the built
-UI at `http://localhost:8080` and Django at `http://localhost:8000`; PostgreSQL
-uses a persistent named volume. The backend connects to the `db` service
+and Django key, then run `docker compose -f compose.yaml up --build`. Compose
+exposes the built UI at `http://localhost:8080` and Django at
+`http://localhost:8000`; PostgreSQL uses a persistent named volume. The
+backend connects to the `db` service
 hostname, not `localhost`, and waits for PostgreSQL health before its one-time
 startup migration/seed step. The browser-facing frontend bundle uses
 `http://localhost:8000/api/v1`; it contains no database secret.
 
-For tests, `docker compose -f compose.yaml exec backend python -m pytest -q -ra` creates or
-uses the separate `harvestledger_test` database through the local Compose role.
-`docker compose -f compose.yaml exec backend bash scripts/migrate_and_seed.sh` repeats the safe
-seed on the selected local development database. `docker compose -f compose.yaml down` stops
-services while preserving the PostgreSQL volume. Always inspect `PGHOST` and
-`PGDATABASE` before manual migrations or seed commands.
+The following commands create or use the separate `harvestledger_test` database,
+repeat the seed on the selected local development database, and stop services
+while preserving PostgreSQL storage:
+
+```bash
+docker compose -f compose.yaml exec backend python -m pytest -q -ra
+docker compose -f compose.yaml exec backend bash scripts/migrate_and_seed.sh
+docker compose -f compose.yaml down
+```
+
+Always inspect `PGHOST` and `PGDATABASE` before manual migrations or seeding.
 
 ## 6. Running tests and coverage
 
-Run the M1 suite (the green gate) from `backend/`:
+Run unit and integration tests from `backend/`:
 
 ```bash
-python -m pytest -m "not m2"
+python -m pytest tests/unit tests/integration
 ```
 
-Run everything (M1 regression + M2 business rules):
+Run the complete backend suite (unit, integration, and API):
 
 ```bash
 python -m pytest
 ```
 
-Run only the M2 business-rule tests (marker `m2`), or only the M3 HTTP API tests
-(marker `m3`). The markers are a selection convenience; there is no
-`xfail`/`skip` anywhere, so a failing rule test fails the build rather than being
-hidden.
+Run only tests carrying the M2 or M3 marker when narrowing a failure. Some
+unmarked tests also exercise those layers; a marker selection is not the full
+milestone gate.
 
 ```bash
 python -m pytest -m m2
@@ -251,7 +276,9 @@ Measure coverage with the project's configured tooling (`pytest-cov`, from
 python -m pytest --cov=procurement --cov-report=term-missing
 ```
 
-On 19 October 2026, with Python 3.11.9 and an isolated PostgreSQL test database,
+The last recorded complete M5 local run passed **543 backend tests** on an
+isolated PostgreSQL test database. The separate coverage measurement below is
+historical: on 19 October 2026, with Python 3.11.9 and an isolated test database,
 `python -m pytest --reuse-db -q -ra --cov=procurement --cov-report=term --cov-report=json:coverage.json`
 completed with **527 passed** (325 unit+integration, 202 API), no reported skips
 or xfails, and 96% displayed whole-package coverage (2,191 statements, 97
@@ -502,7 +529,7 @@ components, so `kind` and `status` reuse a single component each instead of
 diverging per endpoint. Regenerate and validate from `backend/`:
 
 ```bash
-venv/Scripts/python.exe manage.py spectacular --validate --file schema.yaml
+python manage.py spectacular --validate --file schema.yaml
 ```
 
 **Rule-to-service-to-test map.** Each API operation, the M2 service it delegates
@@ -1057,9 +1084,11 @@ rolled back when a service raises.
 - **Reviewer clock:** `procurement.clock` exposes `use_clock(FrozenClock(...))`
   for tests. A **demo-only, gated** HTTP aid can pin the *business* clock for a
   single request — see [10.1 Reviewer clock aid](#101-reviewer-clock-aid-demo-only).
-- **Safe reseeding:** the command is non-destructive (`get_or_create`), so it is
-  safe to re-run at any time. To start clean, drop and recreate the database,
-  then run `migrate` and `seed_data`.
+- **Reseeding:** the command is idempotent for its deterministic demo records:
+  a repeat run does not reset balances, reapply recovery, or alter snapshots.
+  Its first run **does add fictional financial transactions**. Inspect the
+  selected database before invoking it; use a disposable local database for
+  clean-start exercises and never use the reviewer database for tests.
 - **Reproduce edge cases:** run `python -m pytest tests/integration/test_seed.py`
   for seed behaviour, `python -m pytest tests/integration/test_concurrency.py`
   for the locking guarantees, and `python -m pytest -m m2` for the M2 rules.
@@ -1126,9 +1155,9 @@ is not available.
 ## 11. Known limitations
 
 **M1 schema, M2 services, the M3 HTTP API and the M4 procurement UI are
-implemented** (543 backend tests passed in the M5 local PostgreSQL run; see [COVERAGE.md](COVERAGE.md) for earlier coverage figures). The
-frontend is verified by `npm test` (190 Vitest tests), `npm run lint`,
-`npm run build`, a real-API browser journey and a production-preview route check.
+implemented.** The last recorded M5 local verification passed 543 backend
+tests and 190 Vitest tests; [COVERAGE.md](COVERAGE.md) holds an earlier measured
+coverage report. Those results do not establish a successful hosted deployment.
 
 1. The **API is unauthenticated** by design (every route is `AllowAny`; no user
    model). It must be placed behind authentication/authorisation before it is
@@ -1136,32 +1165,26 @@ frontend is verified by `npm test` (190 Vitest tests), `npm run lint`,
    only keyed surface; with it disabled, the M4 browser pass verified that the
    headers are sent from memory only, not that a positive clock changes business
    dates.
-2. Render, Docker Compose and CI configuration is prepared but has not been
-   deployed to hosted services. The M4 UI still has unverified browser race and
-   failure paths, and a cached advance-balance display discrepancy was found
-   during independent M4 verification.
-   The frontend is a functional UI over the API with **focused unit tests for the
-   shared API client, helpers, hooks and UI components** (`npm test`), but no
-   end-to-end browser suite is committed to the repository. The M4 acceptance
-   used an external Playwright script against the real API and production
-   preview. Editing is limited to procurement deliveries not locked in a
-   finalised/paid payout; there is no delete affordance (the API intentionally
-   exposes none for settled financial records).
-3. Live links remain placeholders until the manual Render deployment occurs.
+2. Render, Docker Compose and CI configuration is committed, but no successful
+   hosted URL is verified in this README. The supplied Render build log from
+   22 October 2026 stopped before migrations because `SECRET_KEY` was absent
+   from that service; it also selected Python 3.14.8 rather than the configured
+   3.12.14. Correct the service environment before treating a deploy as live.
+3. The frontend has focused Vitest coverage but no committed end-to-end browser
+   suite. Manual M4 review exercised the real API and production preview;
+   sampled browser flows do not cover every request race or failure path. A
+   cached advance-balance display discrepancy was reported in that review.
 4. Concurrency is proven only against a single PostgreSQL instance with
    `select_for_update()`; there is no distributed-lock layer for a future
    multi-database topology (not required by the assignment). The concurrency
    tests are the only place the suite relies on real row locking.
-5. The reviewer database `HarvestDB` has not been migrated to
-   `0002_farmer_indian_mobile` (historical rows are preserved); a database whose
-   `phone` values predate the Indian-mobile rule will reject that migration until
-   the data is corrected.
+5. A database with phone values that predate the Indian-mobile rule may reject
+   migration `0002_farmer_indian_mobile` until those records are corrected. The
+   current state of the hosted/reviewer database has not been checked here.
 6. Unresolved product decisions listed in `clock.py` (intra-day cutoff,
    corrections against PAID weeks, multiple supplementaries per farmer/week,
    external-date IST guarantee, back-dating limits) remain intentionally
    deferred rather than invented.
-7. `requirements.txt` is UTF-8 and is installed directly by the Render build,
-   Docker image build and CI workflow.
 
 ## 12. AI and third-party usage
 
