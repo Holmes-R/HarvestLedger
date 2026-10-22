@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 
 import { getDelivery, getPayout } from "../api/endpoints";
 import { farmerLabel, gradeLabel } from "../api/lookups";
-import { deliveryLockReason } from "../util/delivery";
+import { deliveryLockReason, correctionEligibility } from "../util/delivery";
 import { ledgerContextSuffix } from "../util/ledger";
 import { DELIVERY_KIND_LABEL, deliveryKindTone } from "../util/labels";
 import { navigate, useHashRoute } from "../hooks/useHashRoute";
@@ -39,7 +39,7 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
   );
   const [correcting, setCorrecting] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<ReactNode>(null);
 
   const delivery = data;
   const isCorrection = delivery ? delivery.kind !== "PROCUREMENT" : false;
@@ -57,6 +57,11 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
     ? deliveryLockReason(delivery, payout.data?.status)
     : null;
   const checkingSettlement = payoutId !== null && payout.loading;
+  const settlementUnknown = payoutId !== null && !payout.data;
+  const correction = delivery
+    ? correctionEligibility(delivery, payout.data?.status)
+    : null;
+  const correctingSettlement = Boolean(correction?.checking && settlementUnknown);
 
   return (
     <section className="panel">
@@ -174,23 +179,38 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
               ) : null}
               {payout.error ? (
                 <p className="muted">
-                  Settlement status could not be confirmed; editing is still refused by
-                  the server if the payout is finalised.
+                  Settlement status could not be confirmed; editing and corrections
+                  remain unavailable until it is known, and the server still refuses
+                  them if the payout is finalised.
                 </p>
               ) : null}
               <div className="panel-actions">
                 {lockReason ? null : (
                   <Button
                     onClick={() => setEditing(true)}
-                    disabled={checkingSettlement || !lookups.data}
+                    disabled={settlementUnknown || !lookups.data}
                   >
-                    {checkingSettlement ? "Checking settlement…" : "Edit delivery"}
+                    {settlementUnknown
+                      ? checkingSettlement
+                        ? "Checking settlement�?�"
+                        : "Settlement unavailable"
+                      : "Edit delivery"}
                   </Button>
                 )}
-                <Button variant="ghost" onClick={() => setCorrecting(true)}>
-                  Add correction
-                </Button>
+                {correction?.available ? (
+                  <Button variant="ghost" onClick={() => setCorrecting(true)}>
+                    Add correction
+                  </Button>
+                ) : null}
+                {correctingSettlement ? (
+                  <span className="muted">
+                    Checking settlement before offering corrections…
+                  </span>
+                ) : null}
               </div>
+              {correction?.reason ? (
+                <p className="muted">{correction.reason}</p>
+              ) : null}
             </>
           )}
 
@@ -210,9 +230,25 @@ export function DeliveryDetail({ deliveryId, onBack }: { deliveryId: number; onB
           {correcting ? (
             <CorrectionForm
               deliveryId={deliveryId}
+              original={delivery}
+              farmer={lookups.data?.farmers.get(delivery.farmer)}
               onClose={() => setCorrecting(false)}
-              onSaved={() => {
+              onSaved={(saved) => {
                 setCorrecting(false);
+                setNotice(
+                  <>
+                    Correction note #{saved.id} recorded for delivery #{deliveryId}.{" "}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() =>
+                        navigate(`#/deliveries/${saved.id}${context}`)
+                      }
+                    >
+                      Open note #{saved.id}
+                    </button>
+                  </>,
+                );
                 reload();
               }}
             />

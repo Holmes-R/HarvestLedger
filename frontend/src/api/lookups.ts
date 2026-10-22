@@ -2,11 +2,12 @@
 // on delivery/advance rows (only payouts embed a farmer name), so lists resolve
 // names from these maps. Caches are cleared after a create so new rows appear.
 
-import type { CropGrade, Farmer } from "./types";
+import type { Crop, CropGrade, Farmer } from "./types";
 import { collectPages } from "./client";
 
 let farmerMap: Map<number, Farmer> | null = null;
 let gradeMap: Map<number, CropGrade> | null = null;
+let cropMap: Map<number, Crop> | null = null;
 
 /**
  * Load **every** farmer, not just the first page. The reference collections are
@@ -36,12 +37,28 @@ export async function loadGradeMap(signal?: AbortSignal): Promise<Map<number, Cr
   return gradeMap;
 }
 
+/** Load every crop (with its allowed grades) for the configuration dialog. */
+export async function loadCropMap(signal?: AbortSignal): Promise<Map<number, Crop>> {
+  if (!cropMap) {
+    const crops = await collectPages<Crop>("/crops/", {
+      query: { page_size: 100, ordering: "id" },
+      signal,
+    });
+    cropMap = new Map(crops.map((crop) => [crop.id, crop]));
+  }
+  return cropMap;
+}
+
 export function invalidateFarmerMap(): void {
   farmerMap = null;
 }
 
 export function invalidateGradeMap(): void {
   gradeMap = null;
+}
+
+export function invalidateCropMap(): void {
+  cropMap = null;
 }
 
 export function farmerLabel(farmers: Map<number, Farmer> | undefined, id: number | null): string {

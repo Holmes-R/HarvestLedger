@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 
 import { ApiError, toApiError } from "../api/client";
 
@@ -9,9 +9,12 @@ export function useSubmit<T>(
 ) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<ApiError | undefined>(undefined);
+  const inFlight = useRef(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true;
     setSubmitting(true);
     setError(undefined);
     try {
@@ -20,6 +23,7 @@ export function useSubmit<T>(
     } catch (cause) {
       setError(toApiError(cause));
     } finally {
+      inFlight.current = false;
       setSubmitting(false);
     }
   }

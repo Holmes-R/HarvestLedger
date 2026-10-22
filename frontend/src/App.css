@@ -564,6 +564,7 @@ button {
 
 .filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-left: auto;
 }
@@ -773,6 +774,11 @@ button {
   .filters {
     margin-left: 0;
     width: 100%;
+  }
+
+  .filters select {
+    flex: 1 1 100%;
+    min-width: 0;
   }
 
   .detail-grid {

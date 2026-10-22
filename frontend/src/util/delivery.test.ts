@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Delivery, DeliveryPreview } from "../api/types";
 import {
   comparePreviewToStored,
+  correctionEligibility,
   deliveryLockReason,
   gradeBelongsToCrop,
   moneyDelta,
@@ -184,5 +185,42 @@ describe("deliveryLockReason", () => {
     expect(
       deliveryLockReason({ kind: "CREDIT_NOTE", payout: null }, "DRAFT"),
     ).toMatch(/immutable/);
+  });
+});
+
+describe("correctionEligibility", () => {
+  const procurement = { kind: "PROCUREMENT" as const, payout: 4 };
+
+  it("offers corrections only for a Finalised or Paid original payout", () => {
+    expect(correctionEligibility(procurement, "FINALISED")).toEqual({
+      available: true,
+      checking: false,
+      reason: null,
+    });
+    expect(correctionEligibility(procurement, "PAID").available).toBe(true);
+  });
+
+  it("does not offer corrections for a Draft or unassigned original", () => {
+    expect(correctionEligibility(procurement, "DRAFT")).toMatchObject({
+      available: false,
+      checking: false,
+    });
+    expect(
+      correctionEligibility({ kind: "PROCUREMENT", payout: null }),
+    ).toMatchObject({ available: false, checking: false });
+  });
+
+  it("does not offer corrections against another correction note", () => {
+    expect(
+      correctionEligibility({ kind: "DEBIT_NOTE", payout: 4 }, "PAID"),
+    ).toMatchObject({ available: false, checking: false });
+  });
+
+  it("reports that settlement is still being checked", () => {
+    expect(correctionEligibility(procurement)).toEqual({
+      available: false,
+      checking: true,
+      reason: null,
+    });
   });
 });

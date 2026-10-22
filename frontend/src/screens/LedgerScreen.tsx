@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { getLedger } from "../api/endpoints";
+import { invalidateFarmerMap } from "../api/lookups";
 import type { LedgerEvent } from "../api/types";
 import {
   LEDGER_EVENT_LABEL,
@@ -29,9 +30,11 @@ import { navigate, replaceHash } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
 import { useLookups } from "../hooks/useLookups";
 import { PageHeader } from "../components/AppShell";
+import { AdvanceForm } from "../components/AdvanceForm";
 import { Button } from "../components/Button";
 import { DataTable } from "../components/DataTable";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { FarmerForm } from "../components/FarmerForm";
 import { DateOnly, Money, Quantity, Timestamp } from "../components/format";
 import { Field, Select, TextInput } from "../components/form";
 import { Empty, Loading } from "../components/Modal";
@@ -222,6 +225,9 @@ export function LedgerScreen({
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [eventType, setEventType] = useState("");
+  const [editingFarmer, setEditingFarmer] = useState(false);
+  const [postingAdvance, setPostingAdvance] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const farmerOptions = useMemo(() => {
     const farmers = lookups.data ? [...lookups.data.farmers.values()] : [];
@@ -264,6 +270,7 @@ export function LedgerScreen({
 
   function selectFarmer(value: string) {
     resetTo(() => setFarmerId(value));
+    setNotice(null);
     replaceHash(value ? `#/ledger?farmer=${value}` : "#/ledger");
   }
 
@@ -282,14 +289,26 @@ export function LedgerScreen({
         subtitle="Advances, deliveries, corrections and payouts with the authoritative outstanding balance and reconciliation."
         actions={
           farmerId ? (
-            <Button
-              variant="ghost"
-              onClick={ledger.reload}
-              pending={ledger.loading}
-              pendingLabel="Refreshing ledger"
-            >
-              Refresh ledger
-            </Button>
+            <>
+              {selectedFarmer ? (
+                <>
+                  <Button variant="ghost" onClick={() => setEditingFarmer(true)}>
+                    Edit farmer
+                  </Button>
+                  <Button variant="ghost" onClick={() => setPostingAdvance(true)}>
+                    Post advance
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                variant="ghost"
+                onClick={ledger.reload}
+                pending={ledger.loading}
+                pendingLabel="Refreshing ledger"
+              >
+                Refresh ledger
+              </Button>
+            </>
           ) : undefined
         }
       />
@@ -340,6 +359,11 @@ export function LedgerScreen({
       </section>
 
       {lookups.error ? <ErrorBanner error={lookups.error} /> : null}
+      {notice ? (
+        <div className="banner banner-ok" role="status">
+          {notice}
+        </div>
+      ) : null}
 
       {farmerId === "" ? (
         <section className="panel">
@@ -575,6 +599,37 @@ export function LedgerScreen({
           </section>
         </>
       )}
+
+      {editingFarmer && selectedFarmer ? (
+        <FarmerForm
+          farmer={selectedFarmer}
+          onClose={() => setEditingFarmer(false)}
+          onSaved={(updated) => {
+            setEditingFarmer(false);
+            setNotice(`Farmer #${updated.id} updated. The ledger has been refreshed.`);
+            invalidateFarmerMap();
+            lookups.reload();
+            ledger.reload();
+          }}
+        />
+      ) : null}
+
+      {postingAdvance && selectedFarmer && lookups.data ? (
+        <AdvanceForm
+          farmers={[...lookups.data.farmers.values()]}
+          defaultFarmerId={selectedFarmer.id}
+          onClose={() => setPostingAdvance(false)}
+          onSaved={(advance) => {
+            setPostingAdvance(false);
+            setNotice(
+              `Advance #${advance.id} posted. The authoritative balance has been refreshed.`,
+            );
+            invalidateFarmerMap();
+            lookups.reload();
+            ledger.reload();
+          }}
+        />
+      ) : null}
     </>
   );
 }

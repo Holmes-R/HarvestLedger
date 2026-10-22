@@ -173,3 +173,50 @@ export function deliveryLockReason(
   }
   return null;
 }
+
+export interface CorrectionEligibility {
+  /** True only for a procurement delivery in a FINALISED or PAID payout. */
+  available: boolean;
+  /** True while the payout status is still being fetched. */
+  checking: boolean;
+  /** Why a correction is not offered, when that is known. */
+  reason: string | null;
+}
+
+/**
+ * A correction note is a new, linked record: it never edits the original
+ * snapshot. The backend accepts one only after the original delivery's payout is
+ * settled, so the UI offers the action under the same condition.
+ */
+export function correctionEligibility(
+  delivery: Pick<Delivery, "kind" | "payout">,
+  payoutStatus?: PayoutStatus,
+): CorrectionEligibility {
+  if (delivery.kind !== "PROCUREMENT") {
+    return {
+      available: false,
+      checking: false,
+      reason: "Correction notes are immutable. Record another note instead.",
+    };
+  }
+  if (delivery.payout === null) {
+    return {
+      available: false,
+      checking: false,
+      reason:
+        "Corrections become available only after the original delivery's payout is Finalised or Paid.",
+    };
+  }
+  if (payoutStatus === undefined) {
+    return { available: false, checking: true, reason: null };
+  }
+  if (payoutStatus === "FINALISED" || payoutStatus === "PAID") {
+    return { available: true, checking: false, reason: null };
+  }
+  return {
+    available: false,
+    checking: false,
+    reason:
+      "This payout is still a Draft. Finalise it before recording a correction against the delivery.",
+  };
+}

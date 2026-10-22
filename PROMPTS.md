@@ -1004,3 +1004,156 @@ reconciled true). No data created; port 8000 released.
 
 Documentation: README §7a ("Farmer ledger screen" plus decisions 12–15), §11;
 `PROMPTS.md` Entry 20.
+
+## Entry 21 - Supporting farmer, crop, advance and correction forms
+
+> Add the supporting write forms against the real API: create/edit farmers,
+> create/configure crops and their grade sets, post advances from a selected
+> ledger, and record credit/debit corrections. Keep the stored outstanding
+> advance read-only, preserve decimal precision, show API field errors and request
+> ids without logging banking data, gate corrections to finalised/paid originals,
+> refresh the affected ledger/lookups after success, and add focused tests for
+> validation, payloads, duplicate submits and linked correction notes.
+
+Produced (`frontend/`):
+
+- `src/components/FarmerForm.tsx` - create/edit dialog posting only
+  `name`/`phone`/`village`/`bank_reference`; stored outstanding balance is shown
+  read-only, phone validation mirrors the backend, and server field errors are
+  mapped onto the matching input.
+- `src/components/CropForm.tsx` + `src/components/CropConfigDialog.tsx` - create
+  or select an existing crop to edit its name, moisture threshold, maximum
+  moisture and comma-separated allowed grade codes. Exact decimal-string bounds
+  validation accepts zero and rejects out-of-range/over-precision input without
+  floats; `409 grade_in_use`/`duplicate_crop` keep the form populated.
+- `src/components/AdvanceForm.tsx` - prefilled selected farmer, positive 2dp
+  amount, business-date validation and a read-only stored balance; posts only
+  `farmer`/`amount`/`given_on`.
+- `src/components/CorrectionForm.tsx` - original/farmer context, credit/debit
+  kind, positive 2dp magnitude, required reason, and copy explaining the payout
+  effect and accounting week/supplementary behaviour. It posts only
+  `kind`/`magnitude`/`reason` to the nested correction endpoint.
+- `src/components/DeliveryDetail.tsx` + `src/util/delivery.ts` - correction
+  eligibility helper: only finalised/paid originals get the action; Draft or
+  unassigned originals explain why. After success, a link to the new note is
+  shown and the original is re-read.
+- `src/screens/DeliveriesScreen.tsx`, `src/screens/LedgerScreen.tsx`,
+  `src/api/lookups.ts` - wire farmer/crop/advance dialogs, invalidate the relevant
+  lookup cache and refresh the authoritative ledger after writes.
+- `src/hooks/useSubmit.ts`, `src/util/errors.ts`, `src/util/decimal.ts` - shared
+  in-flight double-submit latch, API field-error extraction, and exact decimal
+  comparison.
+- Tests - `FarmerForm.test.tsx`, `CropForm.test.tsx`, `AdvanceForm.test.tsx`,
+  `CorrectionForm.test.tsx`, `DeliveryDetail.test.tsx`, plus updated decimal and
+  delivery helper tests.
+
+Decisions/assumptions:
+
+1. **Server-owned balances stay read-only.** No form posts
+   `outstanding_advance`; success triggers a re-read rather than a local patch.
+2. **Domain validation is mirrored, not trusted.** Crop bounds use
+   `compareDecimal` on strings; the API remains the authority and its field
+   errors stay visible.
+3. **Corrections are settlement-gated.** The UI waits for a known
+   `FINALISED`/`PAID` payout status before offering the action and still handles
+   the server's `original_not_settled` race.
+4. **Corrections create a new note.** The original delivery is never patched; the
+   new note is linked from the saved view.
+5. **No sensitive logging.** Phone, bank reference and complete write bodies are
+   not logged; errors surface through the shared banner with code and request id.
+
+Verification (from `frontend/`): `npm test` -> **190 passed** (30 files);
+`npm run lint` clean; `npm run build` (`tsc -b && vite build`) green (60
+modules, ~311.8 kB JS / ~9.4 kB CSS). Read-only live smoke against the real API:
+`GET /crops/?page_size=100` -> `200` (3 crops; keys
+`id,name,moisture_threshold,max_moisture,allowed_grades,created_at`);
+`GET /farmers/?page_size=100` -> `200` (3 farmers; keys include read-only
+`outstanding_advance`). No data created; port 8000 released.
+
+Documentation: README §7a ("Supporting farmer, crop, advance and correction
+forms" plus decisions 16-20); `PROMPTS.md` Entry 21.
+
+---
+
+## Entry 22 — Complete M4 review, production preview and defect fixes
+
+The original M4 review instruction was not captured verbatim in this record. It
+asked for a complete review of the M4 procurement UI: run the frontend tests,
+typecheck, lint and production build; verify the main real-API journey and the
+UI01–UI06 browser acceptance cases; inspect the production build and direct-link
+refresh behaviour; check CORS and sensitive-data handling; update the README and
+this prompt record; and report changed files, commands, results, defects,
+readiness and proposed commits without committing.
+
+Produced/fixed in this review:
+
+- `frontend/index.html` — production document title changed from the scaffold
+  `frontend` to `HarvestLedger`.
+- `frontend/src/App.css` — crop/grade filters now wrap and become full-width on
+  phone layouts. At 390 px the two price-history selects previously forced a
+  459 px page (page-level horizontal overflow); after the change every principal
+  screen measures 390 px with no document overflow.
+- `frontend/src/components/DeliveryDetail.test.tsx` — the two async settlement
+  lookups allow 5 s instead of the 1 s Testing Library default. Under the normal
+  30-worker Vitest run they intermittently timed out while waiting for the
+  error/Finalised state; isolated runs passed in about 0.7 s. Test-only change,
+  no production behaviour changed.
+- `README.md` — documented `npm run preview`, both CORS origins, the M4
+  verification evidence and the remaining limitations.
+- `PROMPTS.md` — this entry.
+
+Verification (22 October 2026, fresh isolated PostgreSQL database, real API):
+
+- `npm test` -> **190 passed** (30 files), after the timeout stabilisation.
+- `npx tsc -b --pretty false` -> passed with no output.
+- `npm run lint` -> clean.
+- `npm run build` (`tsc -b && vite build`) -> green, 60 modules, 311.66 kB JS /
+  9.47 kB CSS.
+- Production `vite preview` on `http://localhost:4173`:
+  - direct navigation and refresh passed for `#/deliveries`, `#/prices`,
+    `#/payouts`, `#/ledger`, `#/deliveries/1` and `#/payouts/1`;
+  - document title `HarvestLedger`;
+  - preview origin allowed by CORS; request-id headers exposed;
+  - no browser console errors or page errors.
+- Through the production UI and real API, created farmer/crop/price and recorded
+  100 kg at 17.60% moisture against a 14.00% threshold. Preview and stored result
+  both showed 3.00% deduction (3.00000 kg), 97.00000 kg net and ₹1,940.00 at
+  ₹20.00/kg. A Draft payout was generated with gross ₹1,940.00, no recovery and
+  unchanged outstanding balance.
+- At 390×844, all four principal screens and both detail screens had no page
+  overflow; delivery/price/payout/ledger tables remained keyboard-focusable
+  horizontal scroll regions. Table actions and amounts were reachable after
+  scrolling, and the delivery preview arithmetic stayed within the viewport.
+- Source/build scans found `VITE_API_BASE_URL` as the only frontend environment
+  input, no login/auth/token flow, mocks only in `*.test.*`, no runtime console
+  logging, and no authoritative money/weight/percentage arithmetic in the
+  client. The production bundle contained no reviewer key, browser storage or
+  database credential.
+- Earlier full real-API journey evidence (same UI code) covered the 13 financial
+  steps: back-dated price append and snapshot preservation; Draft left
+  outstanding unchanged; Finalise recovered ₹1,549.50 from ₹5,165.00 gross and
+  moved outstanding from ₹10,000.00 to ₹8,450.50; Paid did not recover again;
+  settled delivery rejected direct PATCH with `409 payout_state_error`; linked
+  correction did not alter the original; supplementary payout included the note;
+  ledger ended at stored/expected ₹8,450.50 with ₹0.00 difference.
+- UI matrix: UI01 passed after the filter fix; UI02 passed empty/loading/failure
+  states; UI03 passed latest-wins preview; UI04 passed failed-save/finalise input
+  preservation; UI05 produced exactly one finalise POST on a double click; UI06
+  kept date-only values unchanged under `America/New_York` and rendered
+  timestamps in IST.
+
+Findings/limitations:
+
+1. No end-to-end browser suite is committed; M4 acceptance used an external
+   Playwright script kept outside the repository.
+2. The reviewer-clock positive date path was not exercised because
+   `ALLOW_REVIEW_CLOCK` is disabled. Memory-only storage/header behaviour was
+   verified; no browser storage, cookie or bundled key was found.
+3. Wide tables intentionally scroll horizontally on phones rather than losing
+   columns or actions.
+4. No backend source changed during this review, so the backend pytest suite was
+   not rerun as an M4 regression gate.
+
+Readiness: **M4 is ready for M5/review**; no unresolved M4 blocker remains in the
+reviewed frontend. The uncommitted M4 UI work is intentionally left for a
+separate commit decision.

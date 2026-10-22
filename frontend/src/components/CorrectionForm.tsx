@@ -1,8 +1,15 @@
 import { useState } from "react";
 
 import { createCorrection, createDeliveryCorrection } from "../api/endpoints";
-import type { Correction, CorrectionWrite, GradeNoteKind } from "../api/types";
+import type {
+  Correction,
+  CorrectionWrite,
+  Delivery,
+  Farmer,
+  GradeNoteKind,
+} from "../api/types";
 import { validateDecimal } from "../util/decimal";
+import { fieldError } from "../util/errors";
 import { useSubmit } from "../hooks/useSubmit";
 import { Button } from "./Button";
 import { ErrorBanner } from "./ErrorBanner";
@@ -12,28 +19,27 @@ import { Modal } from "./Modal";
 /**
  * Record a credit/debit note. The nested route takes the original from the URL
  * (deliveryId); the general route requires an original id (originalDeliveryId).
- * The original must already be settled, otherwise the API returns
- * 409 original_not_settled.
+ * The original must already be in a Finalised/Paid payout, otherwise the API
+ * returns 409 original_not_settled.
  */
 export function CorrectionForm({
   deliveryId,
   originalDeliveryId,
+  original,
+  farmer,
   onClose,
   onSaved,
 }: {
   deliveryId?: number;
   originalDeliveryId?: number;
+  original?: Pick<Delivery, "id" | "farmer">;
+  farmer?: Farmer;
   onClose: () => void;
   onSaved: (correction: Correction) => void;
 }) {
   const [kind, setKind] = useState<GradeNoteKind>("CREDIT_NOTE");
   const [magnitude, setMagnitude] = useState("");
   const [reason, setReason] = useState("");
-
-  const magnitudeError = magnitude
-    ? validateDecimal(magnitude, { places: 2, positive: true })
-    : "Required.";
-  const valid = !magnitudeError && reason.trim() !== "";
 
   const { submitting, error, submit } = useSubmit(
     () => {
@@ -55,14 +61,37 @@ export function CorrectionForm({
     (saved) => onSaved(saved),
   );
 
+  const magnitudeShapeError = magnitude
+    ? validateDecimal(magnitude, { places: 2, positive: true })
+    : "Required.";
+  const magnitudeError =
+    magnitudeShapeError ?? fieldError(error, "magnitude");
+  const reasonError = reason.trim()
+    ? fieldError(error, "reason")
+    : "Required.";
+  const kindError = fieldError(error, "kind");
+  const originalError = fieldError(error, "original_delivery");
+  const valid = !magnitudeShapeError && reason.trim() !== "";
+  const originalId = original?.id ?? deliveryId ?? originalDeliveryId;
+  const farmerName = farmer?.name ??
+    (original ? `farmer #${original.farmer}` : "the original delivery's farmer");
+
   return (
     <Modal
-      title={deliveryId !== undefined ? `Correct delivery #${deliveryId}` : "Record correction"}
+      title={originalId !== undefined ? `Correct delivery #${originalId}` : "Record correction"}
       onClose={onClose}
+      description="A correction creates a new linked credit or debit note. It never edits the original delivery snapshot."
     >
       <form className="form" onSubmit={submit} noValidate>
         <ErrorBanner error={error} />
-        <Field label="Kind" htmlFor="correction-kind">
+        {originalId !== undefined ? (
+          <p className="muted">
+            Original delivery <strong>#{originalId}</strong> for{" "}
+            <strong>{farmerName}</strong>. Its weight, price and recorded amount
+            stay frozen.
+          </p>
+        ) : null}
+        <Field label="Kind" htmlFor="correction-kind" error={kindError}>
           <Select
             id="correction-kind"
             value={kind}
@@ -74,31 +103,38 @@ export function CorrectionForm({
           />
         </Field>
         <Field
-          label="Magnitude (₹)"
+          label="Magnitude (INR)"
           htmlFor="correction-magnitude"
           error={magnitudeError}
-          hint="A positive money amount; the kind carries the sign."
+          hint="Enter a positive money amount; the selected kind carries the sign."
         >
           <DecimalInput
             id="correction-magnitude"
             value={magnitude}
             onChange={setMagnitude}
             places={2}
-            placeholder="245.00"
+            placeholder="Enter amount"
           />
         </Field>
-        <Field label="Reason" htmlFor="correction-reason">
+        <Field label="Reason" htmlFor="correction-reason" error={reasonError}>
           <TextInput id="correction-reason" value={reason} onChange={setReason} required />
         </Field>
+        {originalError ? (
+          <p className="field-error" role="alert">
+            <span className="err-tag">Error:</span> {originalError}
+          </p>
+        ) : null}
         <p className="muted">
-          The note is stamped with today's IST business date and joins that week's payout, or
-          needs a supplementary payout if the week is settled.
+          A credit note increases the amount due and a debit note reduces it. The
+          note is stamped with today's IST business date, joins that week's payout,
+          or requires a supplementary payout if the original week is already
+          settled.
         </p>
         <div className="form-actions">
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="submit" disabled={!valid} pending={submitting} pendingLabel="Recording…">
+          <Button type="submit" disabled={!valid} pending={submitting} pendingLabel="Recording...">
             Record note
           </Button>
         </div>

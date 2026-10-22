@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decimalPlaces, formatAmount, formatMoney, isDecimal, validateDecimal } from "./decimal";
+import { compareDecimal, decimalPlaces, formatAmount, formatMoney, isDecimal, validateDecimal } from "./decimal";
 
 describe("formatAmount", () => {
   it("groups the integer part in the Indian style", () => {
@@ -51,5 +51,14 @@ describe("decimal helpers", () => {
     expect(validateDecimal("24.567", { places: 2 })).toBe("At most 2 decimal places.");
     expect(validateDecimal("0", { places: 2, positive: true })).toBe("Must be greater than zero.");
     expect(validateDecimal("", { places: 2 })).toBe("Required.");
+  });
+
+  it("compares decimal strings without parsing them as floats", () => {
+    expect(compareDecimal("0", "0.00")).toBe(0);
+    expect(compareDecimal("-1", "0")).toBe(-1);
+    expect(compareDecimal("100", "100.01")).toBe(-1);
+    expect(compareDecimal("14.5", "14.50")).toBe(0);
+    expect(compareDecimal("0014.05", "14.5")).toBe(-1);
+    expect(compareDecimal("not-a-number", "1")).toBeNull();
   });
 });

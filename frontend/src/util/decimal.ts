@@ -43,6 +43,44 @@ export function validateDecimal(value: string, rule: DecimalRule): string | null
   return null;
 }
 
+/**
+ * Compare two decimal strings without parsing them to numbers. Returns -1, 0 or
+ * 1, or null when either value is not a decimal. Safe for money, weights and
+ * percentages at any scale.
+ */
+export function compareDecimal(left: string, right: string): -1 | 0 | 1 | null {
+  const a = normalizedDecimal(left);
+  const b = normalizedDecimal(right);
+  if (a === null || b === null) return null;
+  if (a.negative !== b.negative) return a.negative ? -1 : 1;
+  const sign = (value: -1 | 1): -1 | 1 =>
+    a.negative ? (value === 1 ? -1 : 1) : value;
+  if (a.whole.length !== b.whole.length) {
+    return sign(a.whole.length < b.whole.length ? -1 : 1);
+  }
+  if (a.whole !== b.whole) {
+    return sign(a.whole < b.whole ? -1 : 1);
+  }
+  const length = Math.max(a.fraction.length, b.fraction.length);
+  const aFraction = a.fraction.padEnd(length, "0");
+  const bFraction = b.fraction.padEnd(length, "0");
+  if (aFraction === bFraction) return 0;
+  return sign(aFraction < bFraction ? -1 : 1);
+}
+
+function normalizedDecimal(
+  value: string,
+): { negative: boolean; whole: string; fraction: string } | null {
+  const trimmed = value.trim();
+  if (!isDecimal(trimmed)) return null;
+  const [unsignedWhole, fraction = ""] = (
+    trimmed.startsWith("-") ? trimmed.slice(1) : trimmed
+  ).split(".");
+  const whole = unsignedWhole.replace(/^0+(?=\d)/, "") || "0";
+  const negative = trimmed.startsWith("-") && (whole !== "0" || /[1-9]/.test(fraction));
+  return { negative, whole, fraction };
+}
+
 const EM_DASH = "\u2014";
 
 /** Indian digit grouping: last three digits, then pairs (`12,34,567`). */

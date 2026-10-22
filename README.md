@@ -123,11 +123,14 @@ npm install
 npm run dev      # Vite dev server (default http://localhost:5173)
 npm run lint     # ESLint (flat config, typescript-eslint)
 npm run test     # Vitest unit tests (API client, helpers, shared components)
+npx tsc -b --pretty false  # standalone typecheck; npm run build also runs tsc -b
 npm run build    # tsc -b && vite build
+npm run preview  # serve the production build (default http://localhost:4173)
 ```
 
-`CORS_ALLOWED_ORIGINS` in `backend/.env` must include the dev-server origin (for
-example `http://localhost:5173`) for browser calls to succeed.
+`CORS_ALLOWED_ORIGINS` in `backend/.env` must include every browser origin used,
+for example `http://localhost:5173,http://localhost:4173` for the dev server and
+the production-build preview.
 
 ## 5a. Deployment
 
@@ -698,6 +701,50 @@ empty history/window, API errors, signed corrections, payout/payment states,
 farmer-preserving links and a balance refresh after financial actions
 (`src/screens/LedgerScreen.test.tsx`).
 
+**Supporting farmer, crop, advance and correction forms.** These remain
+contextual modal panels rather than separate dashboards:
+
+- **Farmer create/edit.** `New farmer` on the delivery screen creates a farmer;
+  `Edit farmer` on a selected ledger updates the permitted identity fields only
+  (`name`, `phone`, `village`, `bank_reference`). The stored
+  `outstanding_advance` is shown read-only and is never sent. Phone validation
+  mirrors the API and model rule.
+- **Crop configuration.** `New crop` creates a crop; `Configure crop` selects an
+  existing one. Both post only `name`, `moisture_threshold`, `max_moisture` and
+  the optional `allowed_grades` codes. The client enforces
+  `0 <= moisture_threshold <= max_moisture <= 100` using exact decimal-string
+  comparisons, so zero is valid and no float is involved. A rejected grade
+  removal (`409 grade_in_use`) or duplicate name (`409 duplicate_crop`) is shown
+  without clearing the inputs. Changing a crop never re-prices stored deliveries.
+- **Advance entry.** `Post advance` on the ledger is prefilled with the selected
+  farmer, shows the current stored balance read-only, validates a positive
+  2-decimal amount and a business date, and posts only `farmer`, `amount` and
+  `given_on`. Success invalidates the farmer cache and re-reads the ledger's
+  authoritative summary; no balance is changed locally.
+- **Corrections.** `Add correction` is offered only when the original
+  procurement delivery is in a **Finalised or Paid** payout. An unassigned or
+  Draft original explains why the action is unavailable, and the server still
+  enforces `409 original_not_settled`. The dialog names the original and farmer,
+  requests the kind, a strictly positive 2-decimal magnitude and a required
+  reason, and explains that a credit note adds to the payout, a debit note
+  subtracts, the note joins its own accounting week (or a supplementary payout
+  if that week is settled), and the original snapshot is never edited. The
+  nested endpoint receives only `kind`, `magnitude` and `reason`. After success
+  the original view shows a link to the new note and re-reads the original.
+- All four forms keep every entered value after a validation/API failure, pass
+  the API's `details` messages onto the matching field, and use the shared error
+  banner for the code and `request_id`. `useSubmit` also holds an in-flight latch
+  so a double click/Enter cannot send the same write twice. No banking field or
+  complete request body is logged.
+
+Focused tests cover out-of-range and rejected crop configuration
+(`src/components/CropForm.test.tsx`), farmer create/edit payloads and field
+errors (`src/components/FarmerForm.test.tsx`), failed advances and duplicate
+submits (`src/components/AdvanceForm.test.tsx`), correction payload/validation
+(`src/components/CorrectionForm.test.tsx`), and settlement-gated correction
+actions plus the linked note after success
+(`src/components/DeliveryDetail.test.tsx`).
+
 **Decisions and assumptions.**
 
 1. **No new runtime dependencies.** React 19 + `react-dom` only; navigation,
@@ -720,12 +767,15 @@ farmer-preserving links and a balance refresh after financial actions
    finalised/paid deliveries are explained as read-only. A race still surfaces
    the API's `409 payout_state_error`/`not_editable` in the edit dialog.
 7. **Demo clock is gated and opt-in.** The header control only adds
-   `X-Test-Clock`/`X-Review-Key` when a reviewer fills it in; the key lives in
-   memory/`sessionStorage` and is never compiled into the bundle (see §10.1).
-8. **Verification is lint + typecheck + tests + build + a real-API smoke.**
-   `npm test` covers helpers, the API client, hooks and components; `npm run
-   build` fails on any `tsc -b` type error (`verbatimModuleSyntax`,
-   `erasableSyntaxOnly`, `noUnusedLocals`) and `npm run lint` is clean.
+   `X-Test-Clock`/`X-Review-Key` when a reviewer fills it in; the clock and key
+   live in memory only, are cleared on reload, and are never written to browser
+   storage or compiled into the bundle (see §10.1).
+8. **Verification is lint + typecheck + tests + build + real-API browser
+   acceptance.** `npm test` covers helpers, the API client, hooks and components;
+   `npm run build` fails on any `tsc -b` type error (`verbatimModuleSyntax`,
+   `erasableSyntaxOnly`, `noUnusedLocals`) and `npm run lint` is clean. The
+   production build is also loaded through `npm run preview` and checked with
+   direct links and refresh.
 9. **Price history is append-only in the UI too.** No edit/delete affordance is
    rendered because the API exposes none; a correction is a new entry, and the
    screen explains that deliveries already recorded retain their stored price
@@ -755,6 +805,59 @@ farmer-preserving links and a balance refresh after financial actions
     read-only. After finalising or marking a payout paid elsewhere, **Refresh
     ledger** re-fetches the summary and timeline from the API rather than
     adjusting a local balance.
+16. **A write refreshes its dependants.** Creating a farmer or advancing money
+    invalidates the farmer lookup cache and then re-reads the ledger; a crop
+    change invalidates the crop cache and re-reads the crop map. The UI never
+    patches a stored balance or crop inline from a form response.
+17. **Domain bounds are re-checked on exact decimal strings.** Crop moisture
+    bounds use `compareDecimal`, not `Number`, so `0`, `14.00` and `100.00` are
+    accepted exactly and a long/malformed decimal cannot pass through float
+    rounding. The form mirrors the model invariant and the API remains the
+    authority.
+18. **The stored balance is read-only in every form.** `outstanding_advance` is
+    shown for context in the farmer and advance dialogs but excluded from both
+    write bodies; there is no client-side field that could overwrite it.
+19. **Corrections are settlement-gated.** The action is offered only after the
+    original's payout status is known to be `FINALISED` or `PAID`, while
+    unassigned/Draft originals explain the restriction. No note is created
+    optimistically; success links to the server-created note and re-reads the
+    original.
+20. **Sensitive values stay out of logs.** Bank references, phone numbers and
+    complete write bodies are not logged by the new forms; failures are reported
+    through the API's error code/details and `request_id`.
+
+**M4 review verification (22 October 2026).** The frontend was exercised against
+an isolated PostgreSQL database, the real API, and the production build:
+
+- From `frontend/`: `npm test` -> **190 passed** (30 files), `npm run lint` clean,
+  `npx tsc -b --pretty false` passed, and `npm run build` green (60 modules;
+  311.66 kB JS / 9.47 kB CSS). Two
+  `DeliveryDetail` async checks now allow 5 s for settlement lookup so the
+  parallel suite stays stable under CPU load.
+- Production preview (`npm run preview`, `http://localhost:4173`) served direct
+  links and survived refresh for `#/deliveries`, `#/prices`, `#/payouts`,
+  `#/ledger`, `#/deliveries/1` and `#/payouts/1`; the title is `HarvestLedger`,
+  the preview origin is CORS-allowed, and there were no console errors.
+- Through the production UI, a farmer, crop, price and delivery were created
+  through the real API. At 100 kg gross and 17.60% moisture against a 14.00%
+  threshold, both preview and stored breakdown showed 3.00% deduction
+  (3.00000 kg), 97.00000 kg net, and ₹1,940.00 at ₹20.00/kg. Generating the Draft
+  payout showed gross ₹1,940.00 and no recovery yet.
+- A 390 px mobile pass found no page overflow on the four principal screens or
+  the two detail screens; wide tables remained keyboard-focusable horizontal
+  scroll regions. That pass found and fixed overflowing crop/grade filters on
+  price history (the filters now wrap and stack on phones).
+- Source/build scans confirmed `VITE_API_BASE_URL` is the only frontend
+  environment input; there is no login/auth/token flow, no runtime mock data,
+  and no authoritative financial calculation in the client. The production
+  bundle contains no reviewer key, browser storage or database credential.
+- The earlier real-API journey validated price snapshots after a back-dated
+  append, Draft-versus-Finalised recovery, paid idempotency, linked corrections
+  and supplementary payouts, and an exact ledger reconciliation
+  (`₹8,450.50` stored/expected, `₹0.00` difference). UI01–UI06 also passed:
+  mobile reachability, loading/failure states, latest-wins preview, failed-write
+  input preservation, single finalise POST, and IST/date-only rendering under a
+  non-IST browser timezone.
 
 ## 8. Business rules and assumptions
 
@@ -956,19 +1059,23 @@ is not available.
 
 **M1 schema, M2 services, the M3 HTTP API and the M4 procurement UI are
 implemented** (527 backend tests passing; see [COVERAGE.md](COVERAGE.md)). The
-frontend is verified by `npm test` (169 Vitest tests), `npm run lint`,
-`npm run build` and a live-API smoke run.
+frontend is verified by `npm test` (190 Vitest tests), `npm run lint`,
+`npm run build`, a real-API browser journey and a production-preview route check.
 
 1. The **API is unauthenticated** by design (every route is `AllowAny`; no user
    model). It must be placed behind authentication/authorisation before it is
    exposed beyond a demo. The reviewer-clock aid is off by default and is the
-   only keyed surface.
+   only keyed surface; with it disabled, the M4 browser pass verified that the
+   headers are sent from memory only, not that a positive clock changes business
+   dates.
 2. Not implemented at this milestone: production hosting/Docker wiring and CI.
    The frontend is a functional UI over the API with **focused unit tests for the
    shared API client, helpers, hooks and UI components** (`npm test`), but no
-   end-to-end browser tests. Editing is limited to procurement deliveries not
-   locked in a finalised/paid payout; there is no delete affordance (the API
-   intentionally exposes none for settled financial records).
+   end-to-end browser suite is committed to the repository. The M4 acceptance
+   used an external Playwright script against the real API and production
+   preview. Editing is limited to procurement deliveries not locked in a
+   finalised/paid payout; there is no delete affordance (the API intentionally
+   exposes none for settled financial records).
 3. Deployment, hosting, live links and CI are not available yet and are left as
    placeholders earlier in this README.
 4. Concurrency is proven only against a single PostgreSQL instance with

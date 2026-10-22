@@ -7,8 +7,9 @@ import { Field, TextInput } from "./form";
 
 /**
  * Demo-only control for the gated reviewer clock (backend `ALLOW_REVIEW_CLOCK`).
- * It only ever sets request headers; the key is held in memory/sessionStorage
- * and is never written into the build. Leave off for normal use.
+ * It only ever sets request headers; the clock and review key are held in
+ * memory only and are never written into storage or the build. Leave off for
+ * normal use.
  */
 export function DemoClockControl() {
   const current = getDemoClock();
@@ -16,6 +17,7 @@ export function DemoClockControl() {
   const [clock, setClock] = useState(current.clock ?? "");
   const [key, setKey] = useState(current.reviewKey ?? "");
   const [notice, setNotice] = useState<string | null>(null);
+  const [applied, setApplied] = useState<string | null>(null);
 
   function apply() {
     if (clock.trim() && !isApiTimestamp(clock)) {
@@ -25,12 +27,18 @@ export function DemoClockControl() {
       return;
     }
     setDemoClock(clock || null, key || null);
-    window.location.reload();
+    setNotice(null);
+    setApplied(
+      "Clock headers applied for this page session. The review key is kept in memory only.",
+    );
   }
 
   function clear() {
     setDemoClock(null, null);
-    window.location.reload();
+    setClock("");
+    setKey("");
+    setNotice(null);
+    setApplied("Demo clock cleared.");
   }
 
   return (
@@ -64,6 +72,11 @@ export function DemoClockControl() {
             <p className="field-error" role="alert">
               <span className="err-tag">Error:</span> {notice}
             </p>
+          ) : null}
+          {applied ? (
+            <div className="banner banner-ok" role="status">
+              {applied}
+            </div>
           ) : null}
           <div className="demo-clock-actions">
             <Button onClick={apply}>Apply</Button>

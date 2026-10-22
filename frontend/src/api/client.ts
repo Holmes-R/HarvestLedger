@@ -208,21 +208,10 @@ const RAW_BASE = import.meta.env.VITE_API_BASE_URL;
 export const API_BASE =
   (RAW_BASE && RAW_BASE.trim().replace(/\/+$/, "")) || "http://localhost:8000/api/v1";
 
-// Demo-only reviewer clock. Held in memory and mirrored to sessionStorage so a
-// reload keeps the demo date, but never written to any build-time VITE_* value.
-const CLOCK_KEY = "hl.demoClock";
-const REVIEW_KEY = "hl.demoReviewKey";
-
-function readSession(key: string): string | null {
-  try {
-    return window.sessionStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-let demoClock: string | null = readSession(CLOCK_KEY);
-let demoReviewKey: string | null = readSession(REVIEW_KEY);
+// Demo-only reviewer clock. Held in memory only: the optional review key is
+// never written to browser storage or any build-time VITE_* value.
+let demoClock: string | null = null;
+let demoReviewKey: string | null = null;
 
 export interface DemoClockState {
   clock: string | null;
@@ -237,14 +226,6 @@ export function getDemoClock(): DemoClockState {
 export function setDemoClock(clock: string | null, reviewKey: string | null): void {
   demoClock = clock && clock.trim() ? clock.trim() : null;
   demoReviewKey = reviewKey && reviewKey.trim() ? reviewKey.trim() : null;
-  try {
-    if (demoClock) window.sessionStorage.setItem(CLOCK_KEY, demoClock);
-    else window.sessionStorage.removeItem(CLOCK_KEY);
-    if (demoReviewKey) window.sessionStorage.setItem(REVIEW_KEY, demoReviewKey);
-    else window.sessionStorage.removeItem(REVIEW_KEY);
-  } catch {
-    // sessionStorage may be unavailable; the in-memory values still apply.
-  }
 }
 
 export type QueryValue = string | number | boolean | null | undefined;

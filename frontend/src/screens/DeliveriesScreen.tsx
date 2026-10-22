@@ -1,7 +1,13 @@
 import { useState } from "react";
 
 import { listDeliveries } from "../api/endpoints";
-import { farmerLabel, gradeLabel, invalidateFarmerMap, invalidateGradeMap } from "../api/lookups";
+import {
+  farmerLabel,
+  gradeLabel,
+  invalidateCropMap,
+  invalidateFarmerMap,
+  invalidateGradeMap,
+} from "../api/lookups";
 import { DELIVERY_KIND_LABEL, deliveryKindTone } from "../util/labels";
 import { navigate } from "../hooks/useHashRoute";
 import { useAsync } from "../hooks/useAsync";
@@ -10,6 +16,7 @@ import { Button } from "../components/Button";
 import { DataTable } from "../components/DataTable";
 import { DeliveryEntryForm } from "../components/DeliveryEntryForm";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { CropConfigDialog } from "../components/CropConfigDialog";
 import { CropForm } from "../components/CropForm";
 import { FarmerForm } from "../components/FarmerForm";
 import { DateOnly, Money } from "../components/format";
@@ -26,6 +33,7 @@ export function DeliveriesScreen() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [newFarmer, setNewFarmer] = useState(false);
   const [newCrop, setNewCrop] = useState(false);
+  const [configureCrop, setConfigureCrop] = useState(false);
 
   const deliveries = useAsync(
     (signal) => listDeliveries({ page }, { signal }),
@@ -49,6 +57,9 @@ export function DeliveriesScreen() {
             </Button>
             <Button variant="ghost" onClick={() => setNewCrop(true)}>
               New crop
+            </Button>
+            <Button variant="ghost" onClick={() => setConfigureCrop(true)}>
+              Configure crop
             </Button>
           </>
         }
@@ -139,6 +150,19 @@ export function DeliveriesScreen() {
           onClose={() => setNewCrop(false)}
           onSaved={() => {
             setNewCrop(false);
+            invalidateCropMap();
+            invalidateGradeMap();
+            lookups.reload();
+          }}
+        />
+      ) : null}
+
+      {configureCrop ? (
+        <CropConfigDialog
+          onClose={() => setConfigureCrop(false)}
+          onSaved={() => {
+            setConfigureCrop(false);
+            invalidateCropMap();
             invalidateGradeMap();
             lookups.reload();
           }}
