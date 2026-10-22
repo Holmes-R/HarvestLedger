@@ -15,6 +15,7 @@ from pathlib import Path
 
 import environ
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -23,16 +24,34 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # environment library (see requirements.txt); ``read_env`` keeps the existing
 # os.environ[...] reads below working.
 environ.Env.read_env(BASE_DIR / ".env")
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
+env = environ.Env(DEBUG=(bool, False))
+DEBUG = env.bool("DEBUG")
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+if not SECRET_KEY:
+    raise ImproperlyConfigured("SECRET_KEY must be set in the environment.")
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-wzgtff=$00qm=)f-4xw8vnzqh+b+mz810$1ois_(c(^2j&ujb4"
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+def _csv_env(name: str, default: str = "") -> list[str]:
+    return [
+        item.strip()
+        for item in os.environ.get(name, default).split(",")
+        if item.strip()
+    ]
 
-ALLOWED_HOSTS = []
+
+ALLOWED_HOSTS = _csv_env(
+    "ALLOWED_HOSTS", "localhost,127.0.0.1,testserver" if DEBUG else ""
+)
+if not ALLOWED_HOSTS:
+    raise ImproperlyConfigured("ALLOWED_HOSTS must be set when DEBUG is false.")
+
+CSRF_TRUSTED_ORIGINS = _csv_env("CSRF_TRUSTED_ORIGINS")
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=3600 if not DEBUG else 0)
 
 
 # Application definition
@@ -52,6 +71,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "procurement.api.middleware.RequestIDMiddleware",
     "procurement.api.middleware.ReviewClockMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -143,7 +163,18 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {
+        "BACKEND": (
+            "django.contrib.staticfiles.storage.StaticFilesStorage"
+            if DEBUG
+            else "whitenoise.storage.CompressedManifestStaticFilesStorage"
+        )
+    },
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -294,13 +325,9 @@ SPECTACULAR_SETTINGS = {
 
 # CORS: allow the local Vite dev origin only by default; override with the
 # comma-separated CORS_ALLOWED_ORIGINS environment variable when needed.
-CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(
-        ","
-    )
-    if origin.strip()
-]
+CORS_ALLOWED_ORIGINS = _csv_env(
+    "CORS_ALLOWED_ORIGINS", "http://localhost:5173" if DEBUG else ""
+)
 
 # Extend the package defaults for the documented API/request-clock headers.
 # Origins remain explicit; this does not permit arbitrary headers or callers.
@@ -315,9 +342,7 @@ CORS_EXPOSE_HEADERS = ("x-request-id",)
 # timestamps or request logs, which stay on real time. There is no production
 # bypass: the aid is disabled by default and requires the secret key, which is
 # read from the environment and never logged.
-env = environ.Env(
-    ALLOW_REVIEW_CLOCK=(bool, False),
-    REVIEW_CLOCK_KEY=(str, ""),
+ALLOW_REVIEW_CLOCK = environ.Env(ALLOW_REVIEW_CLOCK=(bool, False)).bool(
+    "ALLOW_REVIEW_CLOCK"
 )
-ALLOW_REVIEW_CLOCK = env.bool("ALLOW_REVIEW_CLOCK")
-REVIEW_CLOCK_KEY = env("REVIEW_CLOCK_KEY")
+REVIEW_CLOCK_KEY = os.environ.get("REVIEW_CLOCK_KEY", "")

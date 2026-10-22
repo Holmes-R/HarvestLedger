@@ -1,0 +1,12 @@
+.env
+.env.*
+.venv/
+venv/
+pgdata/
+__pycache__/
+.pytest_cache/
+.coverage
+coverage.json
+htmlcov/
+staticfiles/
+*.sqlite3

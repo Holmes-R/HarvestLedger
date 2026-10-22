@@ -1,7 +1,6 @@
 /backend/venv
 /backend/pyvenv.cfg
 /frontend/node_modules
-/frontend/package-lock.json
 .env
 **/.env 
 .venv/ 
@@ -12,4 +11,7 @@ __pycache__/
 coverage.json
 htmlcov/ 
 dist/ 
-*.sqlite3 
+/backend/staticfiles/
+*.sqlite3
+backend\.env.example
+frontend\.env.example

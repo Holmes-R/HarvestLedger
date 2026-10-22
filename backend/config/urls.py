@@ -16,12 +16,21 @@ Including another URLconf
 """
 
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import include, path, re_path
+from django.views.decorators.http import require_GET
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from procurement.api.errors import api_route_not_found
 
+
+@require_GET
+def deployment_health(request):
+    return JsonResponse({"status": "ok"})
+
+
 urlpatterns = [
+    path("health/", deployment_health, name="health"),
     path("admin/", admin.site.urls),
     path("api/v1/", include("procurement.api.urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),

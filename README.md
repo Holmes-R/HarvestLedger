@@ -13,8 +13,8 @@ farmer payouts with advance recovery.
   effective-dated prices and moisture deductions, and generates weekly farmer
   payouts with advance recovery.
 
-**Current milestone: M4 procurement UI.** M1 schema, M2 services and the M3
-HTTP API are complete (527 passing tests). The React/TypeScript frontend is now a
+**Current milestone: M5 deployment preparation.** M1 schema, M2 services and the M3
+HTTP API are implemented. The React/TypeScript frontend is a
 working UI over the real API: delivery entry with a live preview, price history,
 weekly payouts and the farmer ledger, plus farmer/crop/advance/correction forms.
 See [section 7a](#7a-frontend-m4-ui).
@@ -34,11 +34,11 @@ See [section 7a](#7a-frontend-m4-ui).
 |---|---|
 | Backend | Django and Django REST Framework |
 | Frontend | React, TypeScript and Vite |
-| Database | PostgreSQL for development and tests |
+| Database | PostgreSQL for development and tests; existing Neon for hosted demo |
 | Tests | pytest, pytest-django and pytest-cov (backend); Vitest + Testing Library (frontend helpers, API client, hooks and components) |
-| Local environment | PostgreSQL service; Docker Compose is not configured |
+| Local environment | PostgreSQL service or Docker Compose |
 | CI | GitHub Actions |
-| Hosting | <actual providers> |
+| Hosting | Render Free Web Service and Static Site (configuration prepared, not deployed) |
 
 Explain any important technology choices briefly.
 
@@ -55,9 +55,8 @@ Frontend → API → Services → Django ORM → PostgreSQL
 
 ## 5. Running locally
 
-Prerequisites: Python 3.11+, PostgreSQL 17 (the verified local version), and
-Node.js for the frontend scaffold. Install the pinned backend
-dependencies from `backend/requirements.txt` (UTF-8).
+Prerequisites: Python 3.12, PostgreSQL 17 and Node.js 22.13+. Install the pinned
+backend dependencies from `backend/requirements.txt` (UTF-8).
 
 Backend (from the repository root):
 
@@ -101,8 +100,8 @@ python manage.py runserver
 The `TEST.NAME` setting reads `PGTESTDATABASE` (or defaults to
 `test_<PGDATABASE>`). `--reuse-db` reuses that isolated test database after its
 first creation. The local role needs `CREATEDB` for a fresh pytest database.
-`SECRET_KEY` is still a development key and must move to a secret store before
-deployment.
+Set a local-only `SECRET_KEY` in the ignored `.env`. Hosted secrets belong in
+Render's environment settings, never in a frontend variable or committed file.
 
 ### 5.1 Frontend
 
@@ -132,18 +131,77 @@ npm run preview  # serve the production build (default http://localhost:4173)
 for example `http://localhost:5173,http://localhost:4173` for the dev server and
 the production-build preview.
 
-## 5a. Deployment
+## 5a. Deployment preparation (Render + Neon)
 
-Document:
-- Providers used.
-- Build and start commands.
-- Environment variables and secrets.
-- Migration and seed process.
-- Provider configuration files.
-- Manual dashboard steps.
-- Redeployment process.
-- Safe reseeding procedure.
-- Database persistence and cold-start limitations.
+No live deployment is implied by these files. The root `render.yaml` defines a
+**native Python Free Web Service** (`rootDir: backend`) and a **Static Site**
+(`rootDir: frontend`). Each service has the scripts and files it needs inside its
+own root directory. The backend health check is `GET /health/` (a liveness probe
+with no database query or sensitive details); `/api/v1/health/` remains available.
+Render build command: `bash build.sh`. It installs `requirements.txt`, runs
+`check` and `collectstatic`, then runs `bash scripts/migrate_and_seed.sh` once
+in the build process. The script verifies the configured PostgreSQL database,
+runs committed migrations and then `seed_data`. The start command runs only
+`gunicorn config.wsgi:application --bind 0.0.0.0:$PORT`; Gunicorn workers do
+not each run migrations. Render Free does not provide the paid pre-deploy hook
+or dashboard shell, so this build-time flow is deliberate. **Build-time
+migrations change the shared Neon database before the new code is live. Keep
+every migration backward compatible with the still-running release.** A failed
+build can therefore leave a migrated database with old application code.
+Never run `makemigrations` in deployment.
+
+The seed creates fictional reference **and financial** demo records through
+the services. It is idempotent and does not reset existing balances, reprice
+snapshots, duplicate its transactions or reapply recoveries; it does add the
+fixed demo history on first run. Review the target database before enabling a
+build. Reseeding uses `bash scripts/migrate_and_seed.sh` against a deliberately
+selected database; keep hosted and test credentials separate. Automated tests
+must never use the Neon/reviewer connection.
+
+Render dashboard/Blueprint setup:
+
+1. Connect this repository and create services from `render.yaml`. No Render
+   Postgres instance is declared: use the existing Neon project. Do not deploy
+   until the database target and fictional seed effects are approved.
+2. Backend secrets: set `SECRET_KEY` (long, random), `PGDATABASE`, `PGUSER`,
+   `PGPASSWORD`, and `PGHOST` from the intended Neon connection. The Blueprint
+   pins `PYTHON_VERSION=3.12.14`, `DEBUG=false`, `PGPORT=5432`,
+   `PGSSLMODE=require`, `PGCHANNELBINDING=require`, and
+   `ALLOW_REVIEW_CLOCK=false`. Leave `REVIEW_CLOCK_KEY` unset.
+3. Backend origins: set `ALLOWED_HOSTS` to the backend hostname only (no scheme),
+   `CSRF_TRUSTED_ORIGINS` to its HTTPS origin for admin forms, and
+   `CORS_ALLOWED_ORIGINS` to the exact frontend HTTPS origin. These accept
+   comma-separated values; do not use `*`. CORS is browser transport, not
+   authentication. The API deliberately remains `AllowAny` for fictional demo
+   data. Put real data behind proper authentication before public use.
+4. Frontend: set `VITE_API_BASE_URL` to
+   `https://YOUR-API.onrender.com/api/v1` before the Static Site build.
+   The client strips any final `/` and concatenates endpoint paths such as
+   `/farmers/`; include `/api/v1` exactly once. This public URL is baked into
+   the bundle. Never set database credentials or a review key in `VITE_*`.
+   The Blueprint pins `NODE_VERSION=22.13.0` and runs `npm ci && npm run build`
+   from the tracked lockfile; publish `dist` with a SPA rewrite.
+5. After each deploy, inspect build logs, confirm `GET /health/`, open the UI,
+   and verify a read/preview workflow. A redeploy reruns the idempotent seed.
+   Render Free instances can sleep and cause cold-start delays; allow time for
+   the first backend request. Neon provides the persistent hosted database.
+
+### Local Docker Compose
+
+Copy the root `.env.example` to ignored `.env`, replace its local-only password
+and Django key, then run `docker compose -f compose.yaml up --build`. Compose exposes the built
+UI at `http://localhost:8080` and Django at `http://localhost:8000`; PostgreSQL
+uses a persistent named volume. The backend connects to the `db` service
+hostname, not `localhost`, and waits for PostgreSQL health before its one-time
+startup migration/seed step. The browser-facing frontend bundle uses
+`http://localhost:8000/api/v1`; it contains no database secret.
+
+For tests, `docker compose -f compose.yaml exec backend python -m pytest -q -ra` creates or
+uses the separate `harvestledger_test` database through the local Compose role.
+`docker compose -f compose.yaml exec backend bash scripts/migrate_and_seed.sh` repeats the safe
+seed on the selected local development database. `docker compose -f compose.yaml down` stops
+services while preserving the PostgreSQL volume. Always inspect `PGHOST` and
+`PGDATABASE` before manual migrations or seed commands.
 
 ## 6. Running tests and coverage
 
@@ -1058,7 +1116,7 @@ is not available.
 ## 11. Known limitations
 
 **M1 schema, M2 services, the M3 HTTP API and the M4 procurement UI are
-implemented** (527 backend tests passing; see [COVERAGE.md](COVERAGE.md)). The
+implemented** (543 backend tests passed in the M5 local PostgreSQL run; see [COVERAGE.md](COVERAGE.md) for earlier coverage figures). The
 frontend is verified by `npm test` (190 Vitest tests), `npm run lint`,
 `npm run build`, a real-API browser journey and a production-preview route check.
 
@@ -1068,7 +1126,10 @@ frontend is verified by `npm test` (190 Vitest tests), `npm run lint`,
    only keyed surface; with it disabled, the M4 browser pass verified that the
    headers are sent from memory only, not that a positive clock changes business
    dates.
-2. Not implemented at this milestone: production hosting/Docker wiring and CI.
+2. Render, Docker Compose and CI configuration is prepared but has not been
+   deployed to hosted services. The M4 UI still has unverified browser race and
+   failure paths, and a cached advance-balance display discrepancy was found
+   during independent M4 verification.
    The frontend is a functional UI over the API with **focused unit tests for the
    shared API client, helpers, hooks and UI components** (`npm test`), but no
    end-to-end browser suite is committed to the repository. The M4 acceptance
@@ -1076,8 +1137,7 @@ frontend is verified by `npm test` (190 Vitest tests), `npm run lint`,
    preview. Editing is limited to procurement deliveries not locked in a
    finalised/paid payout; there is no delete affordance (the API intentionally
    exposes none for settled financial records).
-3. Deployment, hosting, live links and CI are not available yet and are left as
-   placeholders earlier in this README.
+3. Live links remain placeholders until the manual Render deployment occurs.
 4. Concurrency is proven only against a single PostgreSQL instance with
    `select_for_update()`; there is no distributed-lock layer for a future
    multi-database topology (not required by the assignment). The concurrency
@@ -1090,8 +1150,8 @@ frontend is verified by `npm test` (190 Vitest tests), `npm run lint`,
    corrections against PAID weeks, multiple supplementaries per farmer/week,
    external-date IST guarantee, back-dating limits) remain intentionally
    deferred rather than invented.
-7. `requirements.txt` is UTF-16 LE (with BOM); edit it with an editor that
-   preserves that encoding, or re-save it as UTF-16 before `pip install -r`.
+7. `requirements.txt` is UTF-8 and is installed directly by the Render build,
+   Docker image build and CI workflow.
 
 ## 12. AI and third-party usage
 
