@@ -165,7 +165,8 @@ Render dashboard/Blueprint setup:
    until the database target and fictional seed effects are approved.
 2. Backend secrets: set `SECRET_KEY` (long, random), `PGDATABASE`, `PGUSER`,
    `PGPASSWORD`, and `PGHOST` from the intended Neon connection. The Blueprint
-   pins `PYTHON_VERSION=3.12.14`, `DEBUG=false`, `PGPORT=5432`,
+   pins `PYTHON_VERSION=3.12.14` (also recorded in
+   `backend/.python-version`), `DEBUG=false`, `PGPORT=5432`,
    `PGSSLMODE=require`, `PGCHANNELBINDING=require`, and
    `ALLOW_REVIEW_CLOCK=false`. Leave `REVIEW_CLOCK_KEY` unset.
 3. Backend origins: set `ALLOWED_HOSTS` to the backend hostname only (no scheme),
@@ -185,6 +186,15 @@ Render dashboard/Blueprint setup:
    and verify a read/preview workflow. A redeploy reruns the idempotent seed.
    Render Free instances can sleep and cause cold-start delays; allow time for
    the first backend request. Neon provides the persistent hosted database.
+
+If an existing Render service reports `SECRET_KEY must be set`, add `SECRET_KEY`
+on that service's **Environment** page before redeploying. Blueprint entries
+with `sync: false` prompt only during initial creation; syncing an existing
+Blueprint does not populate missing secret values. Verify all required backend
+variables above on the actual service. If its logs show Python 3.14 instead of
+3.12.14, set `PYTHON_VERSION=3.12.14` on that same Environment page and confirm
+the service uses the Python runtime and `backend` root directory. A new build
+must show Python 3.12 before migrations or seeding are attempted.
 
 ### Local Docker Compose
 
